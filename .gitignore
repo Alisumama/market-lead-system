@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+
+# Local database and generated exports
+intel.db
+leads.xlsx
+leads_*.xlsx
+
+# Logs
+*.log
+daily_run.log
+
+# Runtime lock
+run.lock
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

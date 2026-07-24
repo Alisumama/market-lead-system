@@ -1,0 +1,218 @@
+# =============================================================================
+# Bastak Market Intelligence System — Source Registry
+# =============================================================================
+# This is the file YOU edit. To monitor a new website, add one entry below.
+#
+# Fields per source:
+#   name      : human-readable label (shown in logs and, later, in Excel)
+#   url       : the RSS/Atom feed URL (for type: rss / google_alert)
+#               or the page URL (for type: html / tender — Phase 3, not yet fetched)
+#   type      : rss | google_alert | html | tender
+#               Phase 1 (collect.py) only fetches: rss, google_alert
+#               html / tender entries are stored here for later phases and SKIPPED for now.
+#   language  : en | tr | ur | ar | fr | ru  (informational; used later by classify.py)
+#   country   : target market, or "global"
+#   enabled   : true | false  (set false to pause a source without deleting it)
+#
+# TIP: Verify each RSS url in a browser before trusting it — feeds move.
+#      For anything without a feed, create a Google Alert (delivery: RSS) and
+#      paste its feed URL here as type: google_alert. That's the most reliable
+#      way to bring non-RSS sites into the pipeline.
+# =============================================================================
+
+sources:
+
+  # --- Global industry news (RSS) — VERIFIED WORKING ------------------------
+  - name: World-Grain — Articles
+    url: https://www.world-grain.com/rss/articles
+    type: rss
+    language: en
+    country: global
+    enabled: true
+
+  # Miller Magazine has no native RSS, so we surface its content via a
+  # Google News site-scoped feed (verified: ~100 items). Real, working feed.
+  - name: Miller Magazine (via Google News site feed)
+    url: https://news.google.com/rss/search?q=site:millermagazine.com&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: global
+    enabled: true
+
+  # --- Google News RSS searches (VERIFIED WORKING, no account needed) --------
+  # These are search feeds — Google News RSS for a query. They act as an
+  # instant substitute for Google Alerts and return highly relevant hits.
+  # To tune: edit the ?q=... query (URL-encoded). To add a market, copy an
+  # entry and change the query + country. `hl/gl/ceid` set the news locale.
+  - name: Google News — Pakistan flour mill (project/tender/expansion)
+    url: https://news.google.com/rss/search?q=%22flour%20mill%22%20(project%20OR%20tender%20OR%20expansion)%20Pakistan&hl=en-US&gl=US&ceid=US:en
+    type: google_alert
+    language: en
+    country: pk
+    enabled: true
+
+  - name: Google News — Africa flour mill (new/inauguration/investment)
+    url: https://news.google.com/rss/search?q=%22flour%20mill%22%20(new%20OR%20inauguration%20OR%20investment)%20Africa&hl=en-US&gl=US&ceid=US:en
+    type: google_alert
+    language: en
+    country: africa
+    enabled: true
+
+  - name: Google News — Milling plant tender/contract (global)
+    url: https://news.google.com/rss/search?q=%22milling%20plant%22%20(tender%20OR%20contract%20OR%20turnkey)&hl=en-US&gl=US&ceid=US:en
+    type: google_alert
+    language: en
+    country: global
+    enabled: true
+
+  - name: Google News — Turkey un fabrikasi (yatirim/ihale/yeni)
+    url: https://news.google.com/rss/search?q=%22un%20fabrikasi%22%20(yatirim%20OR%20ihale%20OR%20yeni)&hl=tr&gl=TR&ceid=TR:tr
+    type: google_alert
+    language: tr
+    country: tr
+    enabled: true
+
+  - name: Google Alert — Middle East flour mill (project/tender/expansion)
+    url: https://news.google.com/rss/search?q=%22flour%20mill%22%20(project%20OR%20tender%20OR%20expansion)%20(%22Middle%20East%22%20OR%20Egypt%20OR%20Saudi%20OR%20UAE)&hl=en-US&gl=US&ceid=US:en
+    type: google_alert
+    language: en
+    country: middle_east
+    enabled: true
+
+  # --- Your own Google Alerts (optional) ------------------------------------
+  # Prefer the Google News feeds above for speed. If you'd rather use classic
+  # Google Alerts: create at https://www.google.com/alerts, set
+  # "Deliver to: RSS feed", paste the feed URL below, and set enabled: true.
+  #   "мукомольный завод" (новый OR тендер)                   [Russian]
+  #   "atta mill" OR "chakki plant" (new OR tender) Pakistan
+  - name: GA - flour mill projects EN
+    url: https://www.google.com/alerts/feeds/11584069147731437259/1898890444940326509
+    type: google_alert
+    language: en
+    country: global
+    enabled: true
+
+  - name: GA - flour mill 2
+    url: https://www.google.com/alerts/feeds/11584069147731437259/17241816232800396275
+    type: google_alert
+    language: en
+    country: global
+    enabled: true
+
+  - name: Google Alert — Russia/CIS mukomolny zavod
+    url: PLACEHOLDER_PASTE_GOOGLE_ALERT_RSS_URL_HERE
+    type: google_alert
+    language: ru
+    country: ru
+    enabled: false
+
+  # --- Per-country procurement feeds (Google News RSS) ----------------------
+  # One feed per target country. Query per feed:
+  #   ("flour mill" OR grain OR milling)
+  #   (tender OR procurement OR "new project" OR investment) <Country>
+  # Replaces UNDP procurement RSS (which no longer exists). To tune a country,
+  # edit the ?q=... query; to add one, copy a block and change the name/country.
+  - name: GNews procurement - Pakistan
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Pakistan&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: pk
+    enabled: true
+
+  - name: GNews procurement - Nigeria
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Nigeria&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: ng
+    enabled: true
+
+  - name: GNews procurement - Kenya
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Kenya&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: ke
+    enabled: true
+
+  - name: GNews procurement - Egypt
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Egypt&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: eg
+    enabled: true
+
+  - name: GNews procurement - Ethiopia
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Ethiopia&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: et
+    enabled: true
+
+  - name: GNews procurement - Tanzania
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Tanzania&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: tz
+    enabled: true
+
+  - name: GNews procurement - Uganda
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Uganda&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: ug
+    enabled: true
+
+  - name: GNews procurement - Mozambique
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Mozambique&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: mz
+    enabled: true
+
+  - name: GNews procurement - Kazakhstan
+    url: https://news.google.com/rss/search?q=%28%22flour%20mill%22%20OR%20grain%20OR%20milling%29%20%28tender%20OR%20procurement%20OR%20%22new%20project%22%20OR%20investment%29%20Kazakhstan&hl=en-US&gl=US&ceid=US:en
+    type: rss
+    language: en
+    country: kz
+    enabled: true
+
+  # --- Tenders & procurement (Phase 3 — stored now, NOT fetched yet) --------
+  # These are HTML/portal pages, not RSS. collect.py skips type: tender for now.
+  # Structured scrapers get built in Phase 3 (PPRA first).
+  - name: Pakistan PPRA — public procurement
+    url: https://www.ppra.org.pk/
+    type: tender
+    language: en
+    country: pk
+    enabled: false
+
+  - name: UN Global Marketplace (UNGM)
+    url: https://www.ungm.org/Public/Notice
+    type: tender
+    language: en
+    country: global
+    enabled: false
+
+  - name: Turkey EKAP — public procurement
+    url: https://ekap.kik.gov.tr/
+    type: tender
+    language: tr
+    country: tr
+    enabled: false
+
+  # --- Associations / financial signals (Phase 3 — change detection) --------
+  # No feed; watch with changedetection.io or a diff scraper later.
+  # No native RSS. Registered now; fetched in Phase 3 via change detection.
+  # collect.py logs this as 'skipped' each run (visible in the LOG sheet).
+  - name: IFC Project Disclosures
+    url: https://disclosures.ifc.org/
+    type: html
+    language: en
+    country: global
+    enabled: true
+
+  - name: EBRD Project Summaries
+    url: https://www.ebrd.com/work-with-us/project-finance/project-summary-documents.html
+    type: html
+    language: en
+    country: global
+    enabled: false

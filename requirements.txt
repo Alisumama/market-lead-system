@@ -1,0 +1,14 @@
+# Bastak Market Intelligence System — Phase 1 dependencies
+# Install with:  pip install -r requirements.txt
+
+feedparser>=6.0.11    # RSS/Atom parsing (collect.py)
+PyYAML>=6.0.1         # reads sources.yaml
+openpyxl>=3.1.2       # Excel workbook export (export.py -> leads.xlsx)
+
+# classify.py uses the local `claude` Code CLI (headless) — NOT the Anthropic
+# API — so no anthropic package / API key is required. Just have `claude`
+# installed and logged in (claude --version).
+
+# --- Reserved for later phases --------------------------------------------
+# requests>=2.31.0    # Phase 3: structured tender scrapers
+# beautifulsoup4>=4.12 # Phase 3: HTML parsing
