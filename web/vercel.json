@@ -1,0 +1,14 @@
+{
+  "rewrites": [
+    { "source": "/login", "destination": "/public/login.html" },
+    { "source": "/set-password", "destination": "/public/set-password.html" },
+    { "source": "/dashboard", "destination": "/api/dashboard" },
+    { "source": "/", "destination": "/api/dashboard" }
+  ],
+  "headers": [
+    {
+      "source": "/public/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}

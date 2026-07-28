@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Bastak Market Intelligence</title>
+<link rel="stylesheet" href="/public/assets/auth.css">
+</head>
+<body>
+  <div class="card">
+    <h1>Bastak Market Intelligence</h1>
+    <p class="sub">Sign in to view leads. Access is invite-only.</p>
+
+    <form id="login-form" novalidate>
+      <label for="email">Email</label>
+      <input type="email" id="email" autocomplete="username" required>
+
+      <label for="password">Password</label>
+      <div class="pw-field">
+        <input type="password" id="password" autocomplete="current-password" required>
+        <button type="button" class="eye-toggle" id="pw-toggle" aria-label="Show password">&#128065;</button>
+      </div>
+
+      <button type="submit" class="btn" id="signin-btn">Sign in</button>
+    </form>
+
+    <div class="links-row">
+      <a class="link" id="forgot-link">Forgot password?</a>
+    </div>
+
+    <div class="forgot-panel" id="forgot-panel">
+      <label for="forgot-email">Email to send reset link to</label>
+      <input type="email" id="forgot-email" autocomplete="username">
+      <button type="button" class="btn secondary" id="forgot-btn">Send reset link</button>
+    </div>
+
+    <div class="error-box" id="error-box"></div>
+    <div class="info-box" id="info-box"></div>
+
+    <p class="footnote">Access is by invitation only. If you don't have an account,<br>contact your administrator to be added.</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/public/assets/auth.js"></script>
+  <script>
+    const errorBox = document.getElementById("error-box");
+    const infoBox = document.getElementById("info-box");
+    function showError(msg) {
+      infoBox.classList.remove("show");
+      errorBox.textContent = msg;
+      errorBox.classList.add("show");
+    }
+    function showInfo(msg) {
+      errorBox.classList.remove("show");
+      infoBox.textContent = msg;
+      infoBox.classList.add("show");
+    }
+    function clearMessages() {
+      errorBox.classList.remove("show");
+      infoBox.classList.remove("show");
+    }
+
+    wireEyeToggle(document.getElementById("password"), document.getElementById("pw-toggle"));
+
+    document.getElementById("forgot-link").addEventListener("click", () => {
+      document.getElementById("forgot-panel").classList.toggle("show");
+      clearMessages();
+    });
+
+    // Redirect target after a successful login (works whether the gate
+    // route is "/" or "/dashboard" — both are wired to api/dashboard.js).
+    const REDIRECT_AFTER_LOGIN = "/";
+
+    async function completeLogin(session) {
+      await handoffSessionToServer(session);
+      window.location.href = REDIRECT_AFTER_LOGIN;
+    }
+
+    document.getElementById("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearMessages();
+      const btn = document.getElementById("signin-btn");
+      btn.disabled = true;
+      btn.textContent = "Signing in...";
+      try {
+        const supabase = await getSupabaseClient();
+        const email = document.getElementById("email").value.trim();
+        const password = document.getElementById("password").value;
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        if (!data.session) throw new Error("Sign-in did not return a session.");
+        await completeLogin(data.session);
+      } catch (err) {
+        showError(friendlyAuthError(err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+
+    document.getElementById("forgot-btn").addEventListener("click", async () => {
+      clearMessages();
+      const btn = document.getElementById("forgot-btn");
+      const email = document.getElementById("forgot-email").value.trim();
+      if (!email) { showError("Enter your email above first."); return; }
+      btn.disabled = true;
+      try {
+        const supabase = await getSupabaseClient();
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin + "/set-password",
+        });
+        if (error) throw error;
+        // Deliberately the same message whether or not the email exists /
+        // is allow-listed, so this can't be used to discover valid accounts.
+        showInfo("If that email has access, a reset link has been sent.");
+      } catch (err) {
+        showError(friendlyAuthError(err));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

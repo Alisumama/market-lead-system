@@ -18,3 +18,12 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# web/ (private dashboard auth gate — Vercel + Supabase). No secrets ever
+# live in checked-in files here (they're all in Vercel's Environment
+# Variables and the root .env), but these are local build/link artifacts.
+web/node_modules/
+web/.vercel/
+
+web/.env.local
+web/.env
