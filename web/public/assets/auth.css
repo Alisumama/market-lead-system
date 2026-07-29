@@ -62,6 +62,7 @@ a.link:hover{text-decoration:underline}
 
 .forgot-panel{display:none;margin-top:16px;padding-top:16px;border-top:1px solid #eef1ee}
 .forgot-panel.show{display:block}
+.forgot-copy{font-size:13px;color:#41524c;margin:0 0 12px;line-height:1.5;word-break:break-word}
 
 .footnote{text-align:center;color:#9aa39b;font-size:12px;margin-top:20px}
 .hidden{display:none !important}

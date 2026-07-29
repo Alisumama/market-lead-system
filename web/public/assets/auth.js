@@ -9,6 +9,34 @@
  */
 
 // -- Supabase client (config fetched from our own server, see api/public-config.js) --
+//
+// The client is created with a wrapped `fetch` so we can read the
+// "Retry-After" response header on a 429. Supabase's SDK methods only ever
+// surface `message` / `status` / `code` from a failed call — the raw HTTP
+// header is otherwise thrown away — so this is the only way to show a real
+// wait time instead of a made-up one. See friendlyAuthError() below.
+let _lastRetryAfterSeconds = null;
+
+function _trackingFetch(input, init) {
+  return fetch(input, init).then((res) => {
+    _lastRetryAfterSeconds = null;
+    const header = res.headers.get("retry-after");
+    if (header) {
+      const seconds = parseInt(header, 10);
+      if (Number.isFinite(seconds) && seconds > 0) _lastRetryAfterSeconds = seconds;
+    }
+    return res;
+  });
+}
+
+// Feeds a retry-after value into the next friendlyAuthError() call when it
+// was obtained some other way than a direct client-side Supabase call — e.g.
+// a JSON field from one of our own /api/* endpoints, which does its own
+// server-side Retry-After capture (see api/request-password-reset.js).
+function primeRetryAfter(seconds) {
+  _lastRetryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
 let _clientPromise = null;
 function getSupabaseClient() {
   if (_clientPromise) return _clientPromise;
@@ -24,7 +52,9 @@ function getSupabaseClient() {
         );
       }
       // `supabase` global comes from the CDN <script> tag loaded on the page.
-      return window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+      return window.supabase.createClient(supabaseUrl, supabaseAnonKey, {
+        global: { fetch: _trackingFetch },
+      });
     });
   return _clientPromise;
 }
@@ -115,20 +145,65 @@ function wirePasswordStrength({ inputEl, checklistEl, meterEl, onValidityChange 
   return render;
 }
 
-// -- Consistent, non-enumerating error copy for the login form --
+// -- Turn a wait time in seconds into "45 seconds" / "12 minutes" / "2 hours" --
+function formatWaitTime(seconds) {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+// -- Friendly, non-enumerating error copy for the login/reset/set-password forms.
+//
+// Matches on `.status` / `.code` first — the stable, documented fields
+// Supabase's SDK attaches to every auth error — rather than English message
+// text. Message-text matching is why rate limits used to get misread as
+// "incorrect password": a wording mismatch or ordering issue in the regex
+// chain would silently fall through to the wrong branch. Status/code can't
+// drift like that, so rate limiting is checked FIRST, deterministically, and
+// can never be shadowed by a credentials-shaped message.
 function friendlyAuthError(error) {
+  const status = error && error.status;
+  const code = error && error.code;
   const msg = (error && error.message) || "";
-  if (/invalid login credentials/i.test(msg)) {
+
+  const isRateLimited =
+    status === 429 ||
+    code === "over_request_rate_limit" ||
+    code === "over_email_send_rate_limit" ||
+    code === "over_sms_send_rate_limit" ||
+    /rate limit/i.test(msg);
+
+  if (isRateLimited) {
+    const wait = _lastRetryAfterSeconds
+      ? `Please wait about ${formatWaitTime(_lastRetryAfterSeconds)} before trying again.`
+      : null;
+    if (code === "over_email_send_rate_limit") {
+      // Supabase's default email-sending limits are the tightest (built-in
+      // email sending — see web/SETUP.md — is roughly a handful per hour),
+      // so this is the one most likely to actually get hit day-to-day.
+      return (
+        "Too many reset/invite emails have been requested for this address recently. " +
+        (wait || "Please wait about an hour before requesting another.")
+      );
+    }
+    return "Too many attempts. " + (wait || "Please wait a few minutes and try again.");
+  }
+
+  if (code === "invalid_credentials" || /invalid login credentials/i.test(msg)) {
     return "Incorrect email or password.";
   }
-  if (/signups? not allowed|user not allowed|not authorized/i.test(msg)) {
+  if (
+    code === "signup_disabled" ||
+    code === "email_address_not_authorized" ||
+    code === "user_banned" ||
+    /signups? not allowed|user not allowed|not authorized/i.test(msg)
+  ) {
     return "This is an invite-only system and that email hasn't been given access. Contact your administrator.";
   }
-  if (/email not confirmed/i.test(msg)) {
+  if (code === "email_not_confirmed" || /email not confirmed/i.test(msg)) {
     return "That account hasn't accepted its invite yet — check for the invite email.";
-  }
-  if (/rate limit/i.test(msg)) {
-    return "Too many attempts. Please wait a minute and try again.";
   }
   return msg || "Something went wrong. Please try again.";
 }

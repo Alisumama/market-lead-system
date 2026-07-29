@@ -73,7 +73,25 @@ def invite(client, env: dict, email: str, label: str | None) -> None:
         print("  invite email sent.")
     except AuthApiError as exc:
         msg = (exc.message or "").lower()
-        if "already registered" in msg or "already exists" in msg or exc.code == "email_exists":
+        # Checked first and by status/code (not just message text) so a rate
+        # limit can never be misread as some other failure — Supabase's
+        # built-in email sending (the default in web/SETUP.md) only allows a
+        # handful of emails per hour, so this is the error you're most
+        # likely to actually hit when inviting several colleagues at once.
+        rate_limited = (
+            exc.status == 429
+            or exc.code in ("over_email_send_rate_limit", "over_request_rate_limit")
+            or "rate limit" in msg
+        )
+        if rate_limited:
+            sys.exit(
+                f"ERROR: rate-limited by Supabase while sending the invite email to {email}.\n"
+                f"       This is NOT a problem with the email address — you've hit Supabase's "
+                f"email-sending limit.\n"
+                f"       Wait a while (their default is roughly an hour) and try this email "
+                f"again. ({exc.message})"
+            )
+        elif "already registered" in msg or "already exists" in msg or exc.code == "email_exists":
             print("  account already exists for this email (no new invite email sent) — "
                   "continuing to make sure they're on the allowlist.")
         else:
