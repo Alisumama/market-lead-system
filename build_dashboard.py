@@ -150,7 +150,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 
   /* ---- filter bar ---- */
   .controls{background:var(--card);border:.5px solid #e2e7e2;border-radius:10px;padding:14px 16px;
-       display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end;margin-bottom:18px}
+       display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:18px}
   .ctrl{display:flex;flex-direction:column;gap:6px}
   .ctrl.push{margin-left:auto}
   .ctrl label{font-size:11px;color:#7a847c;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
@@ -172,6 +172,12 @@ HTML_TEMPLATE = r"""<!doctype html>
   .dl-btn:active{transform:translateY(1px)}
   .dl-btn:disabled{background:#9aa39b;cursor:not-allowed}
   .dl-btn svg{width:15px;height:15px}
+  .icon-btn{background:var(--green-deep);color:#fff;border:none;border-radius:8px;
+       width:38px;height:38px;flex:none;display:flex;align-items:center;justify-content:center;
+       cursor:pointer;transition:background .15s, transform .15s}
+  .icon-btn:hover{background:#166323}
+  .icon-btn:active{transform:translateY(1px)}
+  .icon-btn svg{width:18px;height:18px}
 
   .count{margin:0 2px 10px;color:#7a847c;font-size:13px}
 
@@ -266,6 +272,12 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <div class="ctrl">
       <label>&nbsp;</label>
+      <button class="icon-btn" id="f-reload" title="Reload results for the selected date range and filters.">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+    </div>
+    <div class="ctrl">
+      <label>&nbsp;</label>
       <button class="dl-btn" id="f-dl" title="Export the currently filtered leads within the chosen date range to an Excel file.">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Excel
@@ -342,11 +354,15 @@ function render(){
   const minScore = +document.getElementById("f-score").value;
   const country = document.getElementById("f-country").value;
   const srcs = activeSources();
+  const start = document.getElementById("f-start").value;
+  const end = document.getElementById("f-end").value;
 
   let rows = DATA.filter(d=>{
     if (d.score < minScore) return false;
     if (country && d.country !== country) return false;
     if (!srcs.includes(d.source_cat)) return false;
+    if (start && d.published_date < start) return false;
+    if (end && d.published_date > end) return false;
     return true;
   });
   sortRows(rows);
@@ -421,6 +437,7 @@ document.getElementById("f-score").addEventListener("input", e=>{
 });
 document.getElementById("f-country").addEventListener("change", render);
 document.querySelectorAll(".f-src").forEach(c=>c.addEventListener("change", render));
+document.getElementById("f-reload").addEventListener("click", render);
 document.querySelectorAll("thead th.sortable").forEach(th=>{
   th.addEventListener("click", ()=>{
     const k = th.dataset.key;
