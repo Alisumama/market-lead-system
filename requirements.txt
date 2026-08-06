@@ -9,10 +9,6 @@ openpyxl>=3.1.2       # Excel workbook export (export.py -> leads.xlsx)
 # API — so no anthropic package / API key is required. Just have `claude`
 # installed and logged in (claude --version).
 
-# invite_colleague.py / deploy_dashboard.py — admin tools for the private
-# dashboard auth gate (web/). Talks to Supabase's Admin Auth + Storage APIs.
-supabase>=2.10.0
-
 # --- Reserved for later phases --------------------------------------------
 # requests>=2.31.0    # Phase 3: structured tender scrapers
 # beautifulsoup4>=4.12 # Phase 3: HTML parsing
