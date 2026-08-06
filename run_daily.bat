@@ -3,7 +3,7 @@ REM ===========================================================================
 REM  Bastak Market Intelligence System - daily pipeline
 REM  Runs: collect.py -> collect_email.py -> collect_worldbank.py
 REM        -> collect_worldbank_procurement.py -> classify.py --model haiku
-REM        -> export.py -> build_dashboard.py
+REM        -> export.py -> build_dashboard.py -> deploy_dashboard.py
 REM  All output is appended, with timestamps, to daily_run.log
 REM  Intended to be launched by Windows Task Scheduler (see README).
 REM ===========================================================================
@@ -99,6 +99,15 @@ echo.>> "%LOG%"
 echo --- build_dashboard.py  (%time%) --->> "%LOG%"
 python build_dashboard.py >> "%LOG%" 2>&1
 echo [build_dashboard.py exit code: %errorlevel%]>> "%LOG%"
+
+REM --- Publish dashboard.html to the private Supabase bucket the auth gate
+REM     serves from (web/). If this fails, the previously published version
+REM     stays live untouched -- it does not roll back or corrupt anything,
+REM     it just means today's build wasn't picked up. See web/SETUP.md.
+echo.>> "%LOG%"
+echo --- deploy_dashboard.py  (%time%) --->> "%LOG%"
+python deploy_dashboard.py >> "%LOG%" 2>&1
+echo [deploy_dashboard.py exit code: %errorlevel%]>> "%LOG%"
 
 REM --- Release the single-instance lock so the next scheduled run can start ---
 del /f /q "%LOCK%" 2>nul
