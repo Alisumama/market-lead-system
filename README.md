@@ -163,3 +163,4 @@ See `market-intelligence-system.md` for the full plan.
 
 <!-- build: 2026-08-06 -->
 
+
