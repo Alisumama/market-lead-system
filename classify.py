@@ -44,12 +44,36 @@ if hasattr(sys.stderr, "reconfigure"):
 CLI_TIMEOUT_SECONDS = 120
 SUMMARY_CHAR_LIMIT = 1500  # keep the prompt (and the OS command line) bounded
 
-PROMPT_TEMPLATE = """You are classifying a news/tender item for Bastak Instruments, a manufacturer of grain, flour, and food-quality analysis LABORATORY equipment. Rate how likely this item represents a real SALES LEAD: someone building, expanding, or tendering for a FLOUR MILL, GRAIN MILLING, or FOOD-PROCESSING plant that would need lab quality-control instruments.
+# Exit code run_daily.bat reads as "classification was SKIPPED, not broken":
+# items stay unclassified and are retried next run, while build_dashboard.py
+# and deploy_dashboard.py still publish as normal. The dashboard must never go
+# stale just because the local CLI was unavailable for one run.
+SKIP_EXIT_CODE = 2
+
+# If this many CLI calls fail back-to-back the CLI is almost certainly unusable
+# (not logged in, erroring, or hanging) rather than choking on one odd item.
+# Stop immediately instead of burning CLI_TIMEOUT_SECONDS on every remaining
+# item -- at --limit 50 that is over an hour, which overruns the hourly
+# schedule and is what makes the pipeline look frozen.
+CONSECUTIVE_FAILURE_LIMIT = 3
+
+PROMPT_TEMPLATE = """You are classifying a news/tender item for Bastak Instruments, a manufacturer of grain, flour, and food-quality analysis LABORATORY equipment. Rate how likely this item represents a real SALES LEAD: someone building, expanding, or tendering for a facility that would need lab quality-control instruments.
+
+In scope (all of these buy grain/flour testing equipment):
+- Flour mills, grain mills, milling plants, feed mills.
+- Food-processing plants handling grain, flour, or cereals (bakeries at industrial scale, pasta/semolina, starch).
+- GRAIN STORAGE AND HANDLING: silos, grain terminals, port grain facilities, grain elevators, warehouses and logistics hubs that take in grain. These run intake quality control (moisture, protein, test weight, falling number) and are genuine prospects — do NOT reject them merely because no mill is mentioned.
 
 Scoring guide:
-8-10 = a confirmed flour-mill / milling-plant PROJECT, TENDER, or EXPANSION, especially with a named company, location, capacity, or budget (a confirmed budget is the highest-intent signal).
+8-10 = a confirmed PROJECT, TENDER, or EXPANSION for any in-scope facility, especially with a named company, location, capacity, or budget (a confirmed budget is the highest-intent signal).
 4-7 = plausibly relevant but vague (no confirmed project details).
-0-3 = generic grain/wheat/commodity price, policy, or unrelated news. Reject these.
+0-3 = generic grain/wheat/commodity price, policy, or unrelated news; equipment-vendor product launches; company earnings with no stated new capacity. Reject these.
+
+Snippet warning:
+The Summary is a search-engine snippet and may contain text from OTHER articles — site sidebars, "related stories", or a trailing unrelated headline followed by a date. The Title is authoritative: classify ONLY the article named in the Title. Ignore any other headline, project, or country appearing in the Summary. If the Summary says nothing about the Title's article, judge from the Title alone and leave unsupported fields as "".
+
+Country rule:
+Items often mention several countries (regional programmes, donor lists, "Africa", multi-country reports). Set "country" to the single country where the physical mill / plant / project is located — not the donor, lender, headquarters, author, or a region. If no single project country is clear, or the item covers several countries, return "" (empty string). Do not guess and do not default to the first country mentioned.
 
 Item:
 Title: {title}
@@ -58,7 +82,7 @@ Published: {published}
 Summary: {summary}
 
 Respond with ONLY a single-line JSON object, no markdown, no explanation outside the JSON:
-{{"score": <integer 0-10>, "is_relevant": <true|false>, "company": "<company name or empty string>", "country": "<project country or empty string>", "project_type": "<short label, e.g. 'new mill', 'expansion', 'tender', 'none'>", "summary": "<one sentence on why this is or isn't a lead>"}}
+{{"score": <integer 0-10>, "is_relevant": <true|false>, "company": "<company name or empty string>", "country": "<the single country where the mill/project is located, or empty string if unclear or multi-country>", "project_type": "<short label, e.g. 'new mill', 'expansion', 'tender', 'none'>", "summary": "<one sentence on why this is or isn't a lead>"}}
 """
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -68,10 +92,17 @@ _FALLBACK_SCORE_RE = re.compile(r"(?<!\d)(10|[0-9])(?!\d)")
 def find_claude_cli() -> str:
     path = shutil.which("claude")
     if not path:
-        sys.exit(
-            "ERROR: the 'claude' CLI was not found on PATH.\n"
-            "Install Claude Code and make sure 'claude' is callable from this shell."
+        # Non-fatal by design: skip classification, let the rest of the
+        # pipeline (export -> build -> deploy) carry on with whatever is
+        # already classified, so the live dashboard still refreshes.
+        print(
+            "SKIPPED: the 'claude' CLI was not found on PATH, so nothing was\n"
+            "         classified this run. Items stay unclassified and are\n"
+            "         retried next run. Install Claude Code and make sure\n"
+            "         'claude' is callable from this shell.",
+            file=sys.stderr,
         )
+        raise SystemExit(SKIP_EXIT_CODE)
     return path
 
 
@@ -221,6 +252,8 @@ def main() -> None:
 
     success_count = 0
     fail_count = 0
+    consecutive_cli_failures = 0
+    cli_unavailable = False
     score_bucket = {"0-3": 0, "4-7": 0, "8-10": 0}
 
     for i, row in enumerate(rows, start=1):
@@ -235,12 +268,23 @@ def main() -> None:
             print(f"{prefix} ERROR: {exc}")
             print(f"           title: {title_preview}")
             fail_count += 1
+            consecutive_cli_failures += 1
+            if consecutive_cli_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                cli_unavailable = True
+                break
             continue
         except Exception as exc:  # noqa: BLE001 - fail loudly, never swallow silently
             print(f"{prefix} ERROR (unexpected {type(exc).__name__}): {exc}")
             print(f"           title: {title_preview}")
             fail_count += 1
+            consecutive_cli_failures += 1
+            if consecutive_cli_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                cli_unavailable = True
+                break
             continue
+
+        # A call got through, so the CLI is alive - reset the run of failures.
+        consecutive_cli_failures = 0
 
         try:
             update_item(conn, row["id"], result)
@@ -273,17 +317,27 @@ def main() -> None:
         print(f"  4-7  (maybe)  : {score_bucket['4-7']}")
         print(f"  8-10 (lead)   : {score_bucket['8-10']}")
 
-    if fail_count > 0:
-        print(f"FAILED: {fail_count} item(s) could not be classified. "
-              f"See errors above.", file=sys.stderr)
-        sys.exit(1)
+    # Exit codes are chosen so run_daily.bat can tell "the CLI was unusable this
+    # run" (recoverable, retry next hour) apart from a genuine error, and so
+    # neither one ever stops the dashboard from being rebuilt and published.
+    if cli_unavailable:
+        print(f"SKIPPED: the claude CLI failed {CONSECUTIVE_FAILURE_LIMIT} times in a "
+              f"row - it is most likely not logged in or erroring. Abandoned "
+              f"classification for this run after {success_count} item(s); the rest "
+              f"stay unclassified and are retried next run.", file=sys.stderr)
+        sys.exit(SKIP_EXIT_CODE)
 
-    if success_count == 0:
-        # Should be unreachable (rows was non-empty and every failure exits
-        # above), but guard explicitly so a silent zero-scored run is
-        # impossible even if the logic above changes later.
-        print("ERROR: no items were classified.", file=sys.stderr)
-        sys.exit(1)
+    if fail_count > 0 and success_count == 0:
+        print(f"SKIPPED: none of the {fail_count} attempted item(s) could be "
+              f"classified. They stay unclassified and are retried next run.",
+              file=sys.stderr)
+        sys.exit(SKIP_EXIT_CODE)
+
+    if fail_count > 0:
+        # Partial success is still success: the classified items are committed,
+        # and the failures simply get picked up on the next run.
+        print(f"WARNING: {success_count} classified, {fail_count} item(s) failed and "
+              f"stay unclassified for the next run. See errors above.", file=sys.stderr)
 
 
 if __name__ == "__main__":

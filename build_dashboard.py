@@ -79,7 +79,11 @@ def load_rows(conn: sqlite3.Connection, cutoff: str) -> list[dict]:
         out.append({
             "score": r["score"] if r["score"] is not None else 0,
             "company": (r["company"] or "").strip(),
-            "country": (r["ai_country"] or r["country"] or "").strip(),
+            # Use ONLY the classifier's country. A deliberate blank from the
+            # model ("no single project country is clear") must stay blank —
+            # falling back to the raw collector-supplied country reintroduced
+            # wrong tags (e.g. multi-country WDS rows showing as "Tajikistan").
+            "country": (r["ai_country"] or "").strip(),
             "project_type": (r["project_type"] or "").strip(),
             "published_date": pub,             # always populated (unknown dates excluded)
             "found": found,                    # scrape date — shown for reference, NOT freshness
@@ -193,12 +197,16 @@ HTML_TEMPLATE = r"""<!doctype html>
   thead th.sortable::after{content:" \2195";opacity:.45;font-size:10px}
   thead th.sorted-asc::after{content:" \2191";opacity:1;color:var(--green-deep)}
   thead th.sorted-desc::after{content:" \2193";opacity:1;color:var(--green-deep)}
-  tbody td{padding:11px 14px;border-top:.5px solid #eef1ee;vertical-align:top}
-  tbody tr:nth-child(even){background:#fafcfa}
-  tbody tr:hover{background:#f2f7f2}
+  tbody td{padding:12px 14px;border-top:1px solid #f0f4ef;vertical-align:top}
+  tbody tr{transition:background .12s ease}
+  tbody tr:nth-child(even){background:#fafcf9}
+  tbody tr:hover{background:#f2f7f1}
   .score{display:inline-block;min-width:26px;text-align:center;font-weight:600;color:#fff;
        border-radius:6px;padding:3px 7px;font-size:12.5px}
-  .sc-hi{background:#32a337} .sc-good{background:#7aa854} .sc-mid{background:#c9a83a} .sc-low{background:#9aa39b}
+  .sc-hi{background:#2e9e34} .sc-good{background:#7aa854} .sc-mid{background:#c9a83a} .sc-low{background:#9aa39b}
+  /* rows fade in when the page changes (not on hover/sort of the same page) */
+  tbody tr.pgin{animation:rowin .15s ease both}
+  @keyframes rowin{from{opacity:0}to{opacity:1}}
   .company{font-weight:600;color:var(--ink)}
   .newbadge{display:inline-block;background:#e5f3e7;color:#1b7a2b;font-size:10px;font-weight:700;
        border-radius:20px;padding:2px 8px;margin-left:8px;vertical-align:middle;letter-spacing:.3px}
@@ -211,6 +219,36 @@ HTML_TEMPLATE = r"""<!doctype html>
   a.src:hover{color:#166323}
   a.src svg{width:16px;height:16px}
   .empty{padding:44px;text-align:center;color:#7a847c}
+
+  /* ---- pagination bar (inside the table card, below the table) ---- */
+  .pagebar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+       padding:12px 16px;border-top:1px solid #f0f4ef;background:var(--card)}
+  .pagebar-left{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .showing{color:#7a847c;font-size:13px;font-variant-numeric:tabular-nums;
+       transition:opacity .18s ease}
+  .showing.fading{opacity:0}
+  .rpp{display:flex;align-items:center;gap:7px;font-size:12px;color:#7a847c}
+  .rpp select{min-width:0;padding:5px 8px;font-size:12.5px;border-radius:6px}
+  .pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .pgbtn{min-width:32px;height:32px;padding:0 9px;background:#fff;color:var(--ink);
+       border:.5px solid #cdd5cd;border-radius:7px;font:inherit;font-size:13px;font-weight:500;
+       cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+       font-variant-numeric:tabular-nums;
+       transition:background .12s ease, border-color .12s ease, color .12s ease}
+  .pgbtn:hover:not(:disabled):not(.active){background:#f2f7f1;border-color:var(--green)}
+  .pgbtn.active{background:var(--green);border-color:var(--green);color:#fff;cursor:default}
+  .pgbtn:disabled{color:#c2cac3;cursor:not-allowed}
+  .pgbtn:focus-visible{outline:2px solid var(--green-deep);outline-offset:2px}
+  .pgbtn svg{width:14px;height:14px}
+  .pgap{padding:0 2px;color:#9aa39b;user-select:none}
+
+  /* Honour the OS "reduce motion" setting: keep every state change, drop the
+     animation. Nothing below is decorative-only — each maps to a transition
+     declared above. */
+  @media (prefers-reduced-motion: reduce){
+    tbody tr.pgin{animation:none}
+    tbody tr,.showing,.pgbtn,.reload-btn,.dl-btn,.icon-btn{transition:none}
+  }
 
   /* ---- footer ---- */
   .foot{text-align:center;color:#9aa39b;font-size:12px;padding:22px 20px 34px}
@@ -306,6 +344,21 @@ HTML_TEMPLATE = r"""<!doctype html>
       </table>
     </div>
     <div class="empty" id="empty" style="display:none">No leads match the current filters.</div>
+
+    <div class="pagebar" id="pagebar">
+      <div class="pagebar-left">
+        <span class="showing" id="showing" aria-live="polite"></span>
+        <span class="rpp">
+          <label for="f-rpp">Rows per page</label>
+          <select id="f-rpp" title="How many leads to show per page.">
+            <option value="10" selected>10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+          </select>
+        </span>
+      </div>
+      <nav class="pager" id="pager" aria-label="Pagination"></nav>
+    </div>
   </div>
 
   <footer class="foot">Fresh window: last __FRESH_DAYS__ days &middot; published since __CUTOFF__</footer>
@@ -316,6 +369,12 @@ const DATA = __DATA_JSON__;
 const RECENT_SINCE = "__RECENT_SINCE__";   // items PUBLISHED on/after this date are "new" (10d)
 let sortKey = "published_date";  // default: newest PUBLISHED first
 let sortDir = -1;                // -1 desc, 1 asc
+let page = 1;                    // 1-based, always relative to the CURRENT filtered set
+let perPage = 10;                // rows per page (10 / 25 / 50)
+
+// Respect the OS "reduce motion" setting for the JS-driven transitions too.
+const REDUCE_MOTION = window.matchMedia
+  && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // -- populate country dropdown --
 const countries = [...new Set(DATA.map(d => d.country).filter(Boolean))].sort();
@@ -324,6 +383,10 @@ for (const c of countries){ const o=document.createElement("option"); o.value=c;
 
 // External-link icon for source cells (green via currentColor).
 const EXT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+
+// Chevrons for the prev/next pagination arrows.
+const CHEV_L = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+const CHEV_R = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
 
 // 8+ green, 7 mid-green, 5-6 amber, <5 gray
 function scoreClass(s){ return s>=8 ? "sc-hi" : (s>=7 ? "sc-good" : (s>=5 ? "sc-mid" : "sc-low")); }
@@ -350,7 +413,10 @@ function sortRows(rows){
   return rows;
 }
 
-function render(){
+// The current filter + sort selection, WITHOUT pagination applied. The stat
+// cards, the count line and the Excel export all describe this full set — only
+// the table body is paged.
+function filteredRows(){
   const minScore = +document.getElementById("f-score").value;
   const country = document.getElementById("f-country").value;
   const srcs = activeSources();
@@ -365,14 +431,27 @@ function render(){
     if (end && d.published_date > end) return false;
     return true;
   });
-  sortRows(rows);
+  return sortRows(rows);
+}
+
+function render(){
+  const rows = filteredRows();
+  const total = rows.length;
+  const pages = Math.max(1, Math.ceil(total / perPage));
+  // Clamp: the filtered set can shrink under us (e.g. a stricter filter while
+  // sitting on page 9), so never render an out-of-range page.
+  if (page > pages) page = pages;
+  if (page < 1) page = 1;
+  const from = (page - 1) * perPage;
+  const pageRows = rows.slice(from, from + perPage);
 
   const tb = document.getElementById("tbody");
   tb.innerHTML = "";
-  for (const d of rows){
+  for (const d of pageRows){
     const tr = document.createElement("tr");
+    tr.className = "pgin";
     const isNew = d.published_date && d.published_date >= RECENT_SINCE;  // published within 10 days
-    if (isNew) tr.className = "isnew";
+    if (isNew) tr.classList.add("isnew");
 
     const sc = document.createElement("td");
     const badge = document.createElement("span");
@@ -418,11 +497,14 @@ function render(){
     tb.appendChild(tr);
   }
 
-  document.getElementById("empty").style.display = rows.length? "none":"block";
-  document.getElementById("stat-shown").textContent = rows.length;
+  document.getElementById("empty").style.display = total? "none":"block";
+  document.getElementById("stat-shown").textContent = total;
   document.getElementById("stat-hi").textContent = rows.filter(d=>d.score>=7).length;
   document.getElementById("count-line").textContent =
-     rows.length + " lead" + (rows.length===1?"":"s") + " shown";
+     total + " lead" + (total===1?"":"s") + " shown";
+
+  updateShowing(total ? from + 1 : 0, from + pageRows.length, total);
+  renderPager(pages);
 
   // header sort indicators
   document.querySelectorAll("thead th.sortable").forEach(th=>{
@@ -431,18 +513,84 @@ function render(){
   });
 }
 
+/* ---------------------------------------------------------------------------
+   Pagination controls. Entirely client-side over the already-embedded DATA —
+   no network calls, so the file stays portable and works offline.
+--------------------------------------------------------------------------- */
+
+// "Showing X-Y of N", faded out and back so the number change is noticeable
+// without moving anything on the page.
+function updateShowing(x, y, n){
+  const el = document.getElementById("showing");
+  const text = n
+    ? ("Showing " + x + "–" + y + " of " + n + " lead" + (n===1?"":"s"))
+    : "No leads to show";
+  if (el.textContent === text) return;          // nothing changed, don't blink
+  if (REDUCE_MOTION){ el.textContent = text; return; }
+  el.classList.add("fading");
+  setTimeout(()=>{ el.textContent = text; el.classList.remove("fading"); }, 180);
+}
+
+// Which page numbers to show. Up to 7 pages: all of them. Beyond that:
+// first, last, the current page and its neighbours, with an ellipsis per gap.
+function pageList(cur, pages){
+  if (pages <= 7) return Array.from({length:pages}, (_,i)=>i+1);
+  const out = [1];
+  const lo = Math.max(2, cur-1), hi = Math.min(pages-1, cur+1);
+  if (lo > 2) out.push("…");
+  for (let i=lo; i<=hi; i++) out.push(i);
+  if (hi < pages-1) out.push("…");
+  out.push(pages);
+  return out;
+}
+
+function renderPager(pages){
+  const nav = document.getElementById("pager");
+  nav.innerHTML = "";
+  const mk = (html, opt)=>{
+    const b = document.createElement("button");
+    b.type = "button";                          // real button: keyboard + focus-visible
+    b.className = "pgbtn" + (opt.active ? " active" : "");
+    b.innerHTML = html;
+    if (opt.label) b.setAttribute("aria-label", opt.label);
+    if (opt.active) b.setAttribute("aria-current", "page");
+    if (opt.disabled) b.disabled = true;
+    if (!opt.disabled && !opt.active && opt.go)
+      b.addEventListener("click", ()=>{ page = opt.go; render(); });
+    return b;
+  };
+  nav.appendChild(mk(CHEV_L, {disabled: page<=1,     go: page-1, label:"Previous page"}));
+  for (const p of pageList(page, pages)){
+    if (p === "…"){
+      const s = document.createElement("span");
+      s.className = "pgap"; s.textContent = "…"; s.setAttribute("aria-hidden","true");
+      nav.appendChild(s);
+      continue;
+    }
+    nav.appendChild(mk(String(p), {active: p===page, go: p, label:"Page "+p}));
+  }
+  nav.appendChild(mk(CHEV_R, {disabled: page>=pages, go: page+1, label:"Next page"}));
+}
+
+// Any change to the FILTERED SET starts again at page 1 — staying on page 7 of
+// a set that just shrank to 2 pages is disorienting. Re-sorting counts too.
+function refilter(){ page = 1; render(); }
+
 // events
 document.getElementById("f-score").addEventListener("input", e=>{
-  document.getElementById("score-val").textContent = e.target.value; render();
+  document.getElementById("score-val").textContent = e.target.value; refilter();
 });
-document.getElementById("f-country").addEventListener("change", render);
-document.querySelectorAll(".f-src").forEach(c=>c.addEventListener("change", render));
-document.getElementById("f-reload").addEventListener("click", render);
+document.getElementById("f-country").addEventListener("change", refilter);
+document.querySelectorAll(".f-src").forEach(c=>c.addEventListener("change", refilter));
+document.getElementById("f-reload").addEventListener("click", refilter);
+document.getElementById("f-rpp").addEventListener("change", e=>{
+  perPage = +e.target.value || 10; refilter();
+});
 document.querySelectorAll("thead th.sortable").forEach(th=>{
   th.addEventListener("click", ()=>{
     const k = th.dataset.key;
     if (sortKey===k){ sortDir *= -1; } else { sortKey=k; sortDir=-1; }
-    render();
+    refilter();
   });
 });
 

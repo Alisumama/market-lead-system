@@ -160,7 +160,3 @@ Remove it later with:
 - **Phase 3:** structured tender scrapers (PPRA first) and change detection.
 
 See `market-intelligence-system.md` for the full plan.
-
-<!-- build: 2026-08-06 -->
-
-

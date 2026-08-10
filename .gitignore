@@ -1,10 +1,14 @@
 # Secrets — never commit
 .env
+*.env
 
 # Local database and generated exports
 intel.db
+*.db
+intel.db.bak-*
 leads.xlsx
 leads_*.xlsx
+*.zip
 
 # Logs
 *.log
