@@ -56,6 +56,78 @@ flutter build windows     # build/windows/x64/runner/Release/
 flutter build apk         # build/app/outputs/flutter-apk/app-release.apk
 ```
 
+### Shipping the Windows build
+
+`build/windows/x64/runner/Release/` is a **self-contained, portable folder** —
+copy the whole folder to any Windows 10/11 x64 machine and run
+`bastak_leads.exe`. No installer, no runtime prerequisites.
+
+It contains the executable, `data/` (Dart AOT image, ICU data, Flutter assets),
+the Flutter engine and plugin DLLs, and the Visual C++ runtime
+(`MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` + MSVCP satellites).
+Those CRT DLLs are **not** part of a stock Flutter build — a clean Windows
+install has no VC++ Redistributable, so the app would fail to start with
+"VCRUNTIME140.dll was not found". They get copied in by the
+`InstallRequiredSystemLibraries` block at the bottom of
+`windows/CMakeLists.txt`, so every `flutter build windows` includes them.
+
+Everything else the binaries import is either in that folder or in-box on
+Windows 10+ (`kernel32`, `ole32`, `dwmapi`, `d3d9`/`dxgi`, the UCRT
+`api-ms-win-crt-*` API sets, …), so nothing else needs shipping. Zip it:
+
+```powershell
+Compress-Archive -Path build\windows\x64\runner\Release\* `
+  -DestinationPath bastak_leads-windows-x64.zip
+```
+
+> `dartjni.dll` in the output imports `jvm.dll`, which does not exist on
+> Windows. It is an unused native asset pulled in by `path_provider_android`
+> and is never loaded on desktop — harmless, and safe to delete if you want a
+> smaller drop.
+
+### Windows installer
+
+For a real setup wizard instead of a zip, build the Inno Setup installer:
+
+```powershell
+winget install JRSoftware.InnoSetup          # one time
+powershell -ExecutionPolicy Bypass -File tool\build_windows_installer.ps1
+# -> build\windows\installer\bastak_leads-<version>-windows-x64-setup.exe
+```
+
+The script runs `flutter build windows --release`, reads the version from
+`pubspec.yaml` so nothing drifts, refuses to package a bundle that is missing
+the VC++ runtime DLLs, and compiles `windows\installer\bastak_leads.iss`.
+Pass `-SkipBuild` to repackage an existing build.
+
+The installer lets the user pick **"just me"** (installs to
+`%LOCALAPPDATA%\Programs\Bastak Leads`, no admin needed) or **"all users"**
+(`Program Files`, prompts for admin), creates Start Menu and optional desktop
+shortcuts, and registers a proper uninstaller in Add/Remove Programs. Upgrades
+replace the previous version in place — the `AppId` GUID in the `.iss` must
+never change, or upgrades would install alongside the old copy instead.
+
+Uninstalling **keeps your leads by default**; it asks whether to also delete
+`%APPDATA%\com.bastak\bastak_leads`, defaulting to No. Note that credentials
+saved through `flutter_secure_storage` live in Windows Credential Manager, not
+in that folder, and are not touched.
+
+Silent install/uninstall, for pushing it out to several machines:
+
+```powershell
+bastak_leads-2.1.1-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
+"%LOCALAPPDATA%\Programs\Bastak Leads\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+```
+
+A silent uninstall never deletes user data. (This relies on the script using
+`SuppressibleMsgBox` rather than `MsgBox` — a plain `MsgBox` is not suppressed
+and wiped the database during unattended uninstalls.)
+
+The installer is **not code-signed**, so SmartScreen will show a
+"Windows protected your PC" warning on first run; users click *More info →
+Run anyway*. Signing it with an EV/OV certificate is the only way to remove
+that.
+
 ## Verify the data path (no GUI)
 
 ```sh

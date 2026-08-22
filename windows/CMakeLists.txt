@@ -106,3 +106,14 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Bundle the Visual C++ runtime DLLs (MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1)
+# next to the executable. Without these the app fails to start on a machine that
+# has never had the "Microsoft Visual C++ Redistributable" installed, which is
+# the common case on a clean Windows install.
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
+include(InstallRequiredSystemLibraries)
+install(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
