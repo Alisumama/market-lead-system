@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/export_service.dart';
 import '../../state/app_state.dart';
+import '../widgets/app_bar_bits.dart';
 import '../widgets/brand_logo.dart';
+import '../widgets/format_picker.dart';
 import '../widgets/version_text.dart';
 import 'scoring_editor.dart';
 
@@ -18,8 +20,16 @@ class SettingsPage extends StatelessWidget {
     return Scaffold(
       body: CustomScrollView(
         slivers: [
-          const SliverAppBar(
-              floating: true, titleSpacing: 20, title: Text('Settings')),
+          SliverAppBar(
+            floating: true,
+            backgroundColor: translucentBarColor(context),
+            flexibleSpace: frostedFlexibleSpace(),
+            leading: mobileBrandLeading(context),
+            leadingWidth: 58,
+            automaticallyImplyLeading: false,
+            titleSpacing: mobileBrandLeading(context) == null ? 20 : 4,
+            title: const Text('Settings'),
+          ),
           SliverList(
             delegate: SliverChildListDelegate([
               _section(context, 'Appearance'),
@@ -228,6 +238,34 @@ class _SecurityTile extends StatelessWidget {
             );
           },
         ),
+        const Divider(height: 1),
+        SwitchListTile(
+          secondary: const Icon(Icons.lock_clock_outlined),
+          title: const Text('Lock when app goes to background'),
+          subtitle: const Text('Require unlock again when you return'),
+          value: state.lockOnBackground,
+          onChanged: state.setLockOnBackground,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.timer_outlined),
+          title: const Text('Auto-lock after inactivity'),
+          subtitle: Text(state.autoLockMinutes <= 0
+              ? 'Off — only lock on background'
+              : 'Lock after ${state.autoLockMinutes} min idle'),
+          trailing: DropdownButton<int>(
+            value: state.autoLockMinutes,
+            underline: const SizedBox.shrink(),
+            items: const [
+              DropdownMenuItem(value: 0, child: Text('Off')),
+              DropdownMenuItem(value: 1, child: Text('1 min')),
+              DropdownMenuItem(value: 5, child: Text('5 min')),
+              DropdownMenuItem(value: 15, child: Text('15 min')),
+              DropdownMenuItem(value: 30, child: Text('30 min')),
+            ],
+            onChanged: (v) => v != null ? state.setAutoLockMinutes(v) : null,
+          ),
+        ),
       ],
     );
   }
@@ -375,15 +413,17 @@ class _DataManagementTile extends StatelessWidget {
 
   Future<void> _exportAll(BuildContext context) async {
     final leads = await state.allLeadsForExport();
+    if (!context.mounted) return;
     if (leads.isEmpty) {
-      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('No leads to export yet')));
       return;
     }
+    final fmt = await pickExportFormat(context);
+    if (fmt is! ExportFormat || !context.mounted) return;
     try {
-      final path = await ExportService().exportCsv(leads);
-      if (!context.mounted) return;
+      final path = await ExportService().exportLeads(leads, fmt);
+      if (!context.mounted || path == null) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Exported ${leads.length} leads → $path')));
     } catch (e) {

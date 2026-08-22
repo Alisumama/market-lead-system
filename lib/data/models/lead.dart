@@ -79,6 +79,7 @@ class Lead {
   final String language;
   final String country; // the source's region tag
   final String collectedAt; // ISO timestamp we first stored it
+  final String imageUrl; // featured image from the feed, '' if none
 
   // Scoring (filled by KeywordScorer, editable by the user)
   final int score; // 0..10
@@ -93,6 +94,7 @@ class Lead {
   final LeadStatus status;
   final bool favorite;
   final String notes;
+  final bool seen; // true once the user has opened this lead
 
   const Lead({
     this.id,
@@ -107,6 +109,7 @@ class Lead {
     this.language = '',
     this.country = '',
     required this.collectedAt,
+    this.imageUrl = '',
     this.score = 0,
     this.isRelevant = false,
     this.company = '',
@@ -117,10 +120,38 @@ class Lead {
     this.status = LeadStatus.fresh,
     this.favorite = false,
     this.notes = '',
+    this.seen = false,
   });
 
   static String hashUrl(String url) =>
       sha256.convert(utf8.encode(url.trim())).toString();
+
+  /// A normalized key used to catch the SAME story arriving from different
+  /// feeds under different URLs. Lowercases, drops a trailing " - Publisher"
+  /// segment (as Google News appends), strips punctuation and collapses
+  /// whitespace. Empty for titles with no usable letters (dedup then falls
+  /// back to the URL hash).
+  String get dedupKey => computeDedupKey(title);
+
+  static final _sepRe = RegExp(r'\s[\-–—|]\s');
+  static final _punctRe = RegExp(r'[^\p{L}\p{N}\s]', unicode: true);
+  static final _wsRe = RegExp(r'\s+');
+
+  static String computeDedupKey(String title) {
+    var t = title.toLowerCase().trim();
+    // Drop a trailing " - <publisher>" / " — <publisher>" / " | <publisher>"
+    // only when the tail is short enough to be a source name (<= 6 words).
+    final seps = _sepRe.allMatches(t).toList();
+    if (seps.isNotEmpty) {
+      final last = seps.last;
+      final tail = t.substring(last.end).trim();
+      if (tail.isNotEmpty && tail.split(' ').length <= 6) {
+        t = t.substring(0, last.start);
+      }
+    }
+    t = t.replaceAll(_punctRe, ' ').replaceAll(_wsRe, ' ').trim();
+    return t;
+  }
 
   Lead copyWith({
     int? id,
@@ -134,6 +165,7 @@ class Lead {
     LeadStatus? status,
     bool? favorite,
     String? notes,
+    bool? seen,
     String? title,
     String? country,
   }) {
@@ -150,6 +182,7 @@ class Lead {
       language: language,
       country: country ?? this.country,
       collectedAt: collectedAt,
+      imageUrl: imageUrl,
       score: score ?? this.score,
       isRelevant: isRelevant ?? this.isRelevant,
       company: company ?? this.company,
@@ -160,6 +193,7 @@ class Lead {
       status: status ?? this.status,
       favorite: favorite ?? this.favorite,
       notes: notes ?? this.notes,
+      seen: seen ?? this.seen,
     );
   }
 
@@ -176,6 +210,7 @@ class Lead {
         'language': language,
         'country': country,
         'collected_at': collectedAt,
+        'image_url': imageUrl,
         'score': score,
         'is_relevant': isRelevant ? 1 : 0,
         'company': company,
@@ -186,6 +221,8 @@ class Lead {
         'status': status.storageValue,
         'favorite': favorite ? 1 : 0,
         'notes': notes,
+        'seen': seen ? 1 : 0,
+        'dedup_key': dedupKey,
       };
 
   factory Lead.fromMap(Map<String, Object?> m) => Lead(
@@ -201,6 +238,7 @@ class Lead {
         language: m['language'] as String? ?? '',
         country: m['country'] as String? ?? '',
         collectedAt: m['collected_at'] as String? ?? '',
+        imageUrl: m['image_url'] as String? ?? '',
         score: (m['score'] as int?) ?? 0,
         isRelevant: (m['is_relevant'] as int? ?? 0) == 1,
         company: m['company'] as String? ?? '',
@@ -211,5 +249,6 @@ class Lead {
         status: LeadStatusX.fromStorage(m['status'] as String?),
         favorite: (m['favorite'] as int? ?? 0) == 1,
         notes: m['notes'] as String? ?? '',
+        seen: (m['seen'] as int? ?? 0) == 1,
       );
 }
