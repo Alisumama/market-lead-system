@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -71,16 +73,51 @@ class AuthGate extends StatefulWidget {
   State<AuthGate> createState() => _AuthGateState();
 }
 
-class _AuthGateState extends State<AuthGate> {
+class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   bool _splashDone = false;
   bool _unlocked = false;
   bool _initStarted = false;
+  Timer? _idleTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
 
   void _onUnlocked() {
     setState(() => _unlocked = true);
     if (!_initStarted) {
       _initStarted = true;
       context.read<AppState>().init();
+    }
+    _resetIdleTimer();
+  }
+
+  void _lock() {
+    if (!_unlocked) return;
+    _idleTimer?.cancel();
+    setState(() => _unlocked = false);
+  }
+
+  void _resetIdleTimer() {
+    _idleTimer?.cancel();
+    if (!_unlocked || !_initStarted) return;
+    final mins = context.read<AppState>().autoLockMinutes;
+    if (mins <= 0) return;
+    _idleTimer = Timer(Duration(minutes: mins), _lock);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_unlocked || !_initStarted) return;
+    final lockOnBg = context.read<AppState>().lockOnBackground;
+    if (lockOnBg &&
+        (state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden)) {
+      _lock();
+    } else if (state == AppLifecycleState.resumed) {
+      _resetIdleTimer();
     }
   }
 
@@ -92,6 +129,20 @@ class _AuthGateState extends State<AuthGate> {
     if (!_unlocked) {
       return LockScreen(auth: widget.auth, onUnlocked: _onUnlocked);
     }
-    return const HomeShell();
+    // Any interaction resets the inactivity countdown.
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _resetIdleTimer(),
+      onPointerSignal: (_) => _resetIdleTimer(),
+      onPointerMove: (_) => _resetIdleTimer(),
+      child: const HomeShell(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _idleTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 }

@@ -5,8 +5,10 @@ import 'package:xml/xml.dart';
 
 import '../data/models/feed_source.dart';
 import '../data/models/lead.dart';
+import '../util/text.dart';
 import 'collector.dart';
 import 'date_utils.dart';
+import 'url_unwrap.dart';
 
 /// Fetches RSS 2.0 and Atom feeds and turns each entry into a [Lead].
 /// Pure-Dart replacement for feedparser + collect.py.
@@ -60,21 +62,26 @@ class RssCollector implements Collector {
   Lead? _fromRss(XmlElement item, FeedSource source, String now) {
     final link = _text(item, 'link');
     final guid = _text(item, 'guid');
-    final url = link.isNotEmpty
+    final raw = link.isNotEmpty
         ? link
         : (guid.startsWith('http') ? guid : '');
-    if (url.isEmpty) return null;
+    if (raw.isEmpty) return null;
+    final url = unwrapUrl(raw);
     final published = _firstNonEmpty([
       _text(item, 'pubDate'),
       _text(item, 'published'),
       _text(item, 'date'),
     ]);
+    final rawDesc = _firstNonEmpty([
+      _text(item, 'encoded'), // content:encoded
+      _text(item, 'description'),
+      _text(item, 'summary'),
+    ]);
     return Lead(
       urlHash: Lead.hashUrl(url),
       url: url,
       title: _clean(_text(item, 'title')),
-      summary: _clean(_firstNonEmpty(
-          [_text(item, 'description'), _text(item, 'summary')])),
+      summary: _clean(rawDesc),
       published: published,
       publishedDate: parsePublishedDate(published),
       sourceName: source.name,
@@ -82,6 +89,7 @@ class RssCollector implements Collector {
       language: source.language,
       country: source.country,
       collectedAt: now,
+      imageUrl: _extractImage(item, rawDesc),
     );
   }
 
@@ -103,16 +111,18 @@ class RssCollector implements Collector {
       if (id.startsWith('http')) url = id;
     }
     if (url.isEmpty) return null;
+    url = unwrapUrl(url);
     final published = _firstNonEmpty([
       _text(entry, 'published'),
       _text(entry, 'updated'),
     ]);
+    final rawDesc =
+        _firstNonEmpty([_text(entry, 'content'), _text(entry, 'summary')]);
     return Lead(
       urlHash: Lead.hashUrl(url),
       url: url,
       title: _clean(_text(entry, 'title')),
-      summary: _clean(_firstNonEmpty(
-          [_text(entry, 'summary'), _text(entry, 'content')])),
+      summary: _clean(rawDesc),
       published: published,
       publishedDate: parsePublishedDate(published),
       sourceName: source.name,
@@ -120,6 +130,7 @@ class RssCollector implements Collector {
       language: source.language,
       country: source.country,
       collectedAt: now,
+      imageUrl: _extractImage(entry, rawDesc),
     );
   }
 
@@ -132,8 +143,45 @@ class RssCollector implements Collector {
   static String _firstNonEmpty(List<String> xs) =>
       xs.firstWhere((x) => x.trim().isNotEmpty, orElse: () => '');
 
-  static final _tagRe = RegExp(r'<[^>]+>');
-  static final _wsRe = RegExp(r'\s+');
-  static String _clean(String s) =>
-      s.replaceAll(_tagRe, ' ').replaceAll(_wsRe, ' ').trim();
+  // Strip tags + decode HTML entities (e.g. &nbsp;, &amp;) and collapse space.
+  static String _clean(String s) => cleanHtmlText(s);
+
+  static final _imgTagRe =
+      RegExp('<img[^>]+src=["\']([^"\']+)["\']', caseSensitive: false);
+
+  static bool _looksLikeImage(String url) => RegExp(
+        r'\.(jpe?g|png|webp|gif|avif)(\?|$)',
+        caseSensitive: false,
+      ).hasMatch(url);
+
+  /// Best-effort featured image: MRSS media:content / media:thumbnail, an
+  /// image enclosure, or the first `<img>` in the description/content HTML.
+  static String _extractImage(XmlElement item, String rawDesc) {
+    for (final el in item.descendantElements) {
+      final local = el.name.local.toLowerCase();
+      if (local == 'content' || local == 'thumbnail') {
+        final url = el.getAttribute('url');
+        final medium =
+            (el.getAttribute('medium') ?? el.getAttribute('type') ?? '')
+                .toLowerCase();
+        if (url != null &&
+            (medium.contains('image') || _looksLikeImage(url))) {
+          return url.trim();
+        }
+      } else if (local == 'enclosure') {
+        final url = el.getAttribute('url');
+        final type = (el.getAttribute('type') ?? '').toLowerCase();
+        if (url != null &&
+            (type.startsWith('image') || _looksLikeImage(url))) {
+          return url.trim();
+        }
+      }
+    }
+    final m = _imgTagRe.firstMatch(rawDesc);
+    if (m != null) {
+      final src = m.group(1)!.trim();
+      if (src.startsWith('http')) return src;
+    }
+    return '';
+  }
 }

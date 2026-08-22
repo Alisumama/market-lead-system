@@ -1,18 +1,20 @@
 import 'dart:convert';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 import '../scoring/keyword_scorer.dart';
+import 'secure_kv.dart';
 
-/// Persists user preferences and the (optional) local PIN. Uses secure storage
-/// so the PIN hash never sits in plain prefs. Everything is local to the device.
+/// Persists user preferences and the (optional) local PIN. Uses OS-backed
+/// secure storage where available (Keychain / Keystore / DPAPI), falling back
+/// to a local file on platforms where it isn't (e.g. unsigned macOS). Either
+/// way everything stays on the device — nothing is sent anywhere.
 class SettingsService {
-  final FlutterSecureStorage _store;
-  SettingsService([FlutterSecureStorage? store])
-      : _store = store ?? const FlutterSecureStorage();
+  final SecureKv _store;
+  SettingsService([SecureKv? store]) : _store = store ?? SecureKv();
 
   static const _kAutoRefreshHourly = 'auto_refresh_hourly';
   static const _kFreshDays = 'fresh_days';
+  static const _kLeadView = 'lead_view';
+  static const _kLastBatchAt = 'last_batch_at';
   static const _kDarkMode = 'dark_mode';
   static const _kNotifEnabled = 'notif_enabled';
   static const _kNotifAfterRefresh = 'notif_after_refresh';
@@ -24,6 +26,8 @@ class SettingsService {
   static const _kCutoff = 'relevance_cutoff';
   static const _kPinHash = 'pin_hash';
   static const _kBiometric = 'biometric_enabled';
+  static const _kLockOnBackground = 'lock_on_background';
+  static const _kAutoLockMinutes = 'auto_lock_minutes';
 
   Future<bool> autoRefreshHourly() async =>
       (await _store.read(key: _kAutoRefreshHourly) ?? 'true') == 'true';
@@ -34,6 +38,19 @@ class SettingsService {
       int.tryParse(await _store.read(key: _kFreshDays) ?? '') ?? 90;
   Future<void> setFreshDays(int v) =>
       _store.write(key: _kFreshDays, value: '$v');
+
+  /// 'list' or 'grid'
+  Future<String> leadView() async =>
+      await _store.read(key: _kLeadView) ?? 'list';
+  Future<void> setLeadView(String v) =>
+      _store.write(key: _kLeadView, value: v);
+
+  /// UTC ISO timestamp marking the start of the most recent fetch that added
+  /// leads — anything collected at/after it is "new". Null until the first
+  /// productive fetch.
+  Future<String?> lastBatchAt() => _store.read(key: _kLastBatchAt);
+  Future<void> setLastBatchAt(String iso) =>
+      _store.write(key: _kLastBatchAt, value: iso);
 
   // ---- Notifications ----
   Future<bool> notifEnabled() async =>
@@ -114,4 +131,16 @@ class SettingsService {
       (await _store.read(key: _kBiometric) ?? 'true') == 'true';
   Future<void> setBiometricEnabled(bool v) =>
       _store.write(key: _kBiometric, value: '$v');
+
+  Future<bool> lockOnBackground() async =>
+      (await _store.read(key: _kLockOnBackground) ?? 'true') == 'true';
+  Future<void> setLockOnBackground(bool v) =>
+      _store.write(key: _kLockOnBackground, value: '$v');
+
+  /// Minutes of inactivity before the app auto-locks. 0 = only lock on
+  /// backgrounding (no idle timer).
+  Future<int> autoLockMinutes() async =>
+      int.tryParse(await _store.read(key: _kAutoLockMinutes) ?? '') ?? 5;
+  Future<void> setAutoLockMinutes(int v) =>
+      _store.write(key: _kAutoLockMinutes, value: '$v');
 }

@@ -2,39 +2,94 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/models/lead.dart';
+import '../../services/share_helper.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
+import '../../util/text.dart';
+import '../widgets/lead_image.dart';
 import '../widgets/score_badge.dart';
 
+/// Opens the lead detail. On wide screens it slides in as a panel docked to the
+/// right edge at 50% width; on phones it pushes a full page.
 Future<void> showLeadDetail(
     BuildContext context, Lead lead, AppState state) {
-  return showModalBottomSheet(
+  // Opening a lead marks it seen (dulls it in the list, drops the "new" flag).
+  state.markSeen(lead);
+  final wide = MediaQuery.sizeOf(context).width >= 800;
+
+  if (!wide) {
+    return Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('Lead')),
+        body: SafeArea(child: LeadDetailView(lead: lead, state: state)),
+      ),
+    ));
+  }
+
+  return showGeneralDialog(
     context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    constraints: const BoxConstraints(maxWidth: 640),
-    builder: (_) => LeadDetailSheet(lead: lead, state: state),
+    barrierDismissible: true,
+    barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+    barrierColor: Colors.black.withValues(alpha: 0.4),
+    transitionDuration: const Duration(milliseconds: 260),
+    pageBuilder: (ctx, anim, secondaryAnim) => Align(
+      alignment: Alignment.centerRight,
+      child: FractionallySizedBox(
+        widthFactor: 0.5,
+        heightFactor: 1,
+        child: Material(
+          color: Theme.of(ctx).scaffoldBackgroundColor,
+          elevation: 16,
+          child: SafeArea(
+            child: LeadDetailView(
+              lead: lead,
+              state: state,
+              onClose: () => Navigator.of(ctx).pop(),
+            ),
+          ),
+        ),
+      ),
+    ),
+    transitionBuilder: (ctx, anim, _, child) => SlideTransition(
+      position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+          .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+      child: child,
+    ),
   );
 }
 
 /// Full lead view with complete user control: override the score, change the
 /// pipeline status, star it, write notes, open the source, or delete it.
-class LeadDetailSheet extends StatefulWidget {
+/// Fills its parent's height; used both in the right-side panel and the
+/// full-page (mobile) route.
+class LeadDetailView extends StatefulWidget {
   final Lead lead;
   final AppState state;
-  const LeadDetailSheet(
-      {super.key, required this.lead, required this.state});
+
+  /// Non-null when shown as a dialog panel — renders a close (✕) button.
+  final VoidCallback? onClose;
+
+  const LeadDetailView(
+      {super.key, required this.lead, required this.state, this.onClose});
 
   @override
-  State<LeadDetailSheet> createState() => _LeadDetailSheetState();
+  State<LeadDetailView> createState() => _LeadDetailViewState();
 }
 
-class _LeadDetailSheetState extends State<LeadDetailSheet> {
+class _LeadDetailViewState extends State<LeadDetailView> {
   late Lead _lead = widget.lead;
   late final TextEditingController _notesCtrl =
       TextEditingController(text: _lead.notes);
 
   AppState get state => widget.state;
+
+  void _dismiss() {
+    if (widget.onClose != null) {
+      widget.onClose!();
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
 
   Future<void> _openUrl() async {
     final uri = Uri.tryParse(_lead.url);
@@ -58,17 +113,43 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final media = MediaQuery.of(context);
-    return Padding(
-      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
-      child: ConstrainedBox(
-        constraints:
-            BoxConstraints(maxHeight: media.size.height * 0.9),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+    final cleanSummary = cleanHtmlText(_lead.summary);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.onClose != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Close',
+                  icon: const Icon(Icons.close),
+                  onPressed: _dismiss,
+                ),
+                const SizedBox(width: 4),
+                Text('Lead detail',
+                    style: Theme.of(context).textTheme.titleSmall),
+              ],
+            ),
+          ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+              if (_lead.imageUrl.isNotEmpty) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: LeadImage(
+                    url: _lead.imageUrl,
+                    height: 170,
+                    width: double.infinity,
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -159,12 +240,11 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
               const SizedBox(height: 16),
 
               // Summary
-              if (_lead.summary.isNotEmpty) ...[
+              if (cleanSummary.isNotEmpty) ...[
                 Text('Summary',
                     style: Theme.of(context).textTheme.labelLarge),
                 const SizedBox(height: 6),
-                Text(_lead.summary,
-                    style: const TextStyle(height: 1.5)),
+                Text(cleanSummary, style: const TextStyle(height: 1.5)),
                 const SizedBox(height: 16),
               ],
 
@@ -214,6 +294,11 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
                     label: const Text('Open source'),
                   ),
                   FilledButton.tonalIcon(
+                    onPressed: () => shareLeads([_lead]),
+                    icon: const Icon(Icons.share_outlined, size: 18),
+                    label: const Text('Share'),
+                  ),
+                  FilledButton.tonalIcon(
                     onPressed: _editScore,
                     icon: const Icon(Icons.tune, size: 18),
                     label: const Text('Override score'),
@@ -222,8 +307,8 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
                     OutlinedButton.icon(
                       onPressed: () async {
                         await state.unlockScore(_lead);
-                        if (!context.mounted) return;
-                        Navigator.pop(context);
+                        if (!mounted) return;
+                        _dismiss();
                       },
                       icon: const Icon(Icons.lock_open, size: 18),
                       label: const Text('Auto-score'),
@@ -235,8 +320,8 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
                       final ok = await _confirmDelete(context);
                       if (ok == true) {
                         await state.deleteLead(_lead);
-                        if (!context.mounted) return;
-                        Navigator.pop(context);
+                        if (!mounted) return;
+                        _dismiss();
                       }
                     },
                     icon: const Icon(Icons.delete_outline, size: 18),
@@ -244,10 +329,11 @@ class _LeadDetailSheetState extends State<LeadDetailSheet> {
                   ),
                 ],
               ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 

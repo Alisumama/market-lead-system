@@ -3,24 +3,67 @@ import 'package:provider/provider.dart';
 
 import '../../data/models/feed_source.dart';
 import '../../data/models/lead.dart';
+import '../../services/export_service.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_theme.dart';
+import '../widgets/app_bar_bits.dart';
+import '../widgets/format_picker.dart';
+import '../widgets/multi_select_sheet.dart';
 import 'source_editor.dart';
 
-/// Manage the feed registry: enable/disable, add, edit, delete. Gives the user
-/// complete control over what the pipeline collects. Each row shows the health
-/// of its last run (the "scrapers break silently" safeguard from the original).
-class SourcesPage extends StatelessWidget {
+Future<void> _editSource(
+    BuildContext context, AppState state, FeedSource? existing) async {
+  final result = await showModalBottomSheet<FeedSource>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    constraints: const BoxConstraints(maxWidth: 600),
+    builder: (_) => SourceEditor(source: existing),
+  );
+  if (result != null) await state.saveSource(result);
+}
+
+/// Manage the feed registry: enable/disable, add, edit, delete, with search
+/// (name/URL) and Type/Country filters. Each row shows the health of its last
+/// run (the "scrapers break silently" safeguard from the original).
+class SourcesPage extends StatefulWidget {
   const SourcesPage({super.key});
+
+  @override
+  State<SourcesPage> createState() => _SourcesPageState();
+}
+
+class _SourcesPageState extends State<SourcesPage> {
+  final _searchCtrl = TextEditingController();
+  String _search = '';
+  final Set<String> _types = {}; // SourceKind labels; empty = all
+  final Set<String> _countries = {}; // empty = all
+
+  List<FeedSource> _filter(List<FeedSource> all) {
+    final q = _search.trim().toLowerCase();
+    return all.where((s) {
+      if (q.isNotEmpty &&
+          !s.name.toLowerCase().contains(q) &&
+          !s.url.toLowerCase().contains(q)) {
+        return false;
+      }
+      if (_types.isNotEmpty && !_types.contains(s.kind.label)) return false;
+      if (_countries.isNotEmpty && !_countries.contains(s.country)) {
+        return false;
+      }
+      return true;
+    }).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final sources = state.sources;
+    final all = state.sources;
+    final filtered = _filter(all);
 
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _edit(context, state, null),
+        onPressed: () => _editSource(context, state, null),
         icon: const Icon(Icons.add),
         label: const Text('Add source'),
       ),
@@ -28,9 +71,26 @@ class SourcesPage extends StatelessWidget {
         slivers: [
           SliverAppBar(
             floating: true,
-            titleSpacing: 20,
+            backgroundColor: translucentBarColor(context),
+            flexibleSpace: frostedFlexibleSpace(),
+            leading: mobileBrandLeading(context),
+            leadingWidth: 58,
+            automaticallyImplyLeading: false,
+            titleSpacing: mobileBrandLeading(context) == null ? 20 : 4,
             title: const Text('Sources'),
             actions: [
+              IconButton(
+                tooltip: 'Import sources',
+                onPressed: () => _import(context, state),
+                icon: const Icon(Icons.file_upload_outlined),
+              ),
+              IconButton(
+                tooltip: 'Export sources',
+                onPressed: filtered.isEmpty
+                    ? null
+                    : () => _export(context, filtered),
+                icon: const Icon(Icons.file_download_outlined),
+              ),
               IconButton(
                 tooltip: 'Refresh now',
                 onPressed: state.refreshing ? null : () => state.refresh(),
@@ -39,40 +99,184 @@ class SourcesPage extends StatelessWidget {
               const SizedBox(width: 8),
             ],
           ),
+          SliverToBoxAdapter(child: _searchAndFilters(context, all)),
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
               child: Text(
-                '${sources.where((s) => s.enabled).length} of ${sources.length} '
-                'enabled',
+                '${filtered.where((s) => s.enabled).length} enabled · '
+                '${filtered.length} shown of ${all.length}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
           ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
-            sliver: SliverList.separated(
-              itemCount: sources.length,
-              separatorBuilder: (context, index) => const SizedBox(height: 8),
-              itemBuilder: (context, i) =>
-                  _SourceCard(source: sources[i], state: state),
+          if (filtered.isEmpty)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: Center(child: Text('No sources match your filters')),
+              ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
+              sliver: SliverList.separated(
+                itemCount: filtered.length,
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: 8),
+                itemBuilder: (context, i) =>
+                    _SourceCard(source: filtered[i], state: state),
+              ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _searchAndFilters(BuildContext context, List<FeedSource> all) {
+    final typeOptions = {for (final s in all) s.kind.label}.toList()..sort();
+    final countryOptions = {for (final s in all) s.country}.toList()..sort();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _searchCtrl,
+            onChanged: (v) => setState(() => _search = v),
+            decoration: InputDecoration(
+              hintText: 'Search name or URL…',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _search.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _searchCtrl.clear();
+                        setState(() => _search = '');
+                      }),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _filterChip(
+                context,
+                icon: Icons.category_outlined,
+                label: _types.isEmpty
+                    ? 'All types'
+                    : (_types.length == 1
+                        ? _types.first
+                        : '${_types.length} types'),
+                onTap: () async {
+                  final picked = await showModalBottomSheet<Set<String>>(
+                    context: context,
+                    isScrollControlled: true,
+                    showDragHandle: true,
+                    builder: (_) => MultiSelectSheet(
+                        title: 'Filter by type',
+                        searchHint: 'Search types…',
+                        allLabel: 'All types',
+                        options: typeOptions,
+                        selected: _types),
+                  );
+                  if (picked != null) {
+                    setState(() {
+                      _types
+                        ..clear()
+                        ..addAll(picked);
+                    });
+                  }
+                },
+              ),
+              _filterChip(
+                context,
+                icon: Icons.public,
+                label: _countries.isEmpty
+                    ? 'All countries'
+                    : (_countries.length == 1
+                        ? _countries.first
+                        : '${_countries.length} countries'),
+                onTap: () async {
+                  final picked = await showModalBottomSheet<Set<String>>(
+                    context: context,
+                    isScrollControlled: true,
+                    showDragHandle: true,
+                    builder: (_) => MultiSelectSheet(
+                        title: 'Filter by country',
+                        searchHint: 'Search countries…',
+                        allLabel: 'All countries',
+                        options: countryOptions,
+                        selected: _countries),
+                  );
+                  if (picked != null) {
+                    setState(() {
+                      _countries
+                        ..clear()
+                        ..addAll(picked);
+                    });
+                  }
+                },
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  static Future<void> _edit(
-      BuildContext context, AppState state, FeedSource? existing) async {
-    final result = await showModalBottomSheet<FeedSource>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      constraints: const BoxConstraints(maxWidth: 600),
-      builder: (_) => SourceEditor(source: existing),
+  Future<void> _export(BuildContext context, List<FeedSource> sources) async {
+    final choice = await pickExportFormat(context, includeJson: true);
+    if (choice == null || !context.mounted) return;
+    try {
+      final svc = ExportService();
+      final path = choice == kExportJson
+          ? await svc.exportSourcesJson(sources)
+          : await svc.exportSources(sources, choice as ExportFormat);
+      if (!context.mounted || path == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Exported ${sources.length} sources → $path')));
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Export failed: $e')));
+    }
+  }
+
+  Future<void> _import(BuildContext context, AppState state) async {
+    try {
+      final imported = await ExportService().importSources();
+      if (imported == null || !context.mounted) return;
+      final added = await state.importSources(imported);
+      if (!context.mounted) return;
+      final skipped = imported.length - added;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Imported $added source(s)'
+              '${skipped > 0 ? ' · $skipped already existed' : ''}')));
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Import failed: $e')));
+    }
+  }
+
+  Widget _filterChip(BuildContext context,
+      {required IconData icon,
+      required String label,
+      required VoidCallback onTap}) {
+    return ActionChip(
+      avatar: Icon(icon, size: 16),
+      label: Text(label),
+      onPressed: onTap,
     );
-    if (result != null) await state.saveSource(result);
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 }
 
@@ -93,7 +297,7 @@ class _SourceCard extends StatelessWidget {
 
     return Card(
       child: InkWell(
-        onTap: () => SourcesPage._edit(context, state, source),
+        onTap: () => _editSource(context, state, source),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
           child: Row(
@@ -161,7 +365,7 @@ class _SourceCard extends StatelessWidget {
               PopupMenuButton<String>(
                 onSelected: (v) async {
                   if (v == 'edit') {
-                    await SourcesPage._edit(context, state, source);
+                    await _editSource(context, state, source);
                   } else if (v == 'delete') {
                     final ok = await _confirmDelete(context);
                     if (ok == true) await state.deleteSource(source);

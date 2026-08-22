@@ -10,6 +10,9 @@ import '../services/notification_service.dart';
 import '../services/pipeline.dart';
 import '../services/settings_service.dart';
 
+/// How the leads list is rendered.
+enum LeadView { list, grid }
+
 /// The single source of truth for the UI. Holds the current query/results,
 /// runs the pipeline, owns the in-app refresh timer (the Task Scheduler
 /// replacement), and exposes every data-editing action the user can take.
@@ -31,6 +34,7 @@ class AppState extends ChangeNotifier {
   List<Lead> leads = [];
   LeadStats stats = const LeadStats();
   List<String> countries = [];
+  List<String> sourceNames = [];
   List<FeedSource> sources = [];
   LeadQuery query = const LeadQuery();
 
@@ -44,11 +48,16 @@ class AppState extends ChangeNotifier {
   bool autoRefreshHourly = true;
   DateTime? nextRefreshAt; // top of the next hour, when a scan will run
   ThemeMode themeMode = ThemeMode.system;
+  LeadView leadView = LeadView.list;
+  String? lastBatchAt; // UTC ISO; leads collected at/after this are "new"
 
   bool notifEnabled = false;
   bool notifAfterRefresh = true;
   bool notifOnlyNew = true;
   int notifMinScore = 0;
+
+  bool lockOnBackground = true;
+  int autoLockMinutes = 5;
 
   Timer? _timer;
 
@@ -59,6 +68,11 @@ class AppState extends ChangeNotifier {
     notifAfterRefresh = await settings.notifAfterRefresh();
     notifOnlyNew = await settings.notifOnlyNew();
     notifMinScore = await settings.notifMinScore();
+    lockOnBackground = await settings.lockOnBackground();
+    autoLockMinutes = await settings.autoLockMinutes();
+    leadView =
+        (await settings.leadView()) == 'grid' ? LeadView.grid : LeadView.list;
+    lastBatchAt = await settings.lastBatchAt();
     if (notifEnabled) unawaited(notifications.init());
     final dark = await settings.darkMode();
     themeMode = dark == null
@@ -102,6 +116,7 @@ class AppState extends ChangeNotifier {
     leads = await repo.query(query);
     stats = await repo.stats(freshDays: freshDays);
     countries = await repo.countries();
+    sourceNames = await repo.sourceNames();
     sources = await repo.allSources();
   }
 
@@ -112,6 +127,8 @@ class AppState extends ChangeNotifier {
     lastError = null;
     refreshStatus = 'Starting…';
     notifyListeners();
+    // Leads collected at/after this instant belong to this fetch batch.
+    final batchStart = DateTime.now().toUtc().toIso8601String();
     try {
       final outcome = await pipeline.run(onProgress: (p) {
         refreshStatus =
@@ -122,6 +139,10 @@ class AppState extends ChangeNotifier {
       refreshStatus = outcome.newLeads > 0
           ? '${outcome.newLeads} new lead(s)'
           : 'Up to date';
+      if (outcome.newLeads > 0) {
+        lastBatchAt = batchStart;
+        await settings.setLastBatchAt(batchStart);
+      }
       await _reload();
       if (isAuto) await _maybeNotify(outcome);
     } catch (e) {
@@ -170,10 +191,14 @@ class AppState extends ChangeNotifier {
   Future<void> setSearch(String s) => applyQuery(query.copyWith(search: s));
   Future<void> setMinScore(int v) => applyQuery(query.copyWith(minScore: v));
   Future<void> setSort(LeadSort s) => applyQuery(query.copyWith(sort: s));
-  Future<void> setCountry(String? c) =>
-      applyQuery(query.copyWith(country: c));
+  Future<void> setCountries(Set<String> c) =>
+      applyQuery(query.copyWith(countries: c));
+  Future<void> setSourceNames(Set<String> s) =>
+      applyQuery(query.copyWith(sourceNames: s));
   Future<void> toggleFreshOnly(bool v) =>
       applyQuery(query.copyWith(freshOnly: v));
+  Future<void> setDateRange(String from, String to) =>
+      applyQuery(query.copyWith(dateFrom: from, dateTo: to));
   Future<void> toggleFavoritesOnly(bool v) =>
       applyQuery(query.copyWith(favoritesOnly: v));
   Future<void> setStatusFilter(Set<LeadStatus> s) =>
@@ -185,6 +210,21 @@ class AppState extends ChangeNotifier {
     final i = leads.indexWhere((l) => l.id == lead.id);
     if (i != -1) leads[i] = lead;
     stats = await repo.stats(freshDays: freshDays);
+    notifyListeners();
+  }
+
+  /// True if the lead arrived in the most recent fetch batch and hasn't been
+  /// opened yet — drives the "new" card highlight.
+  bool isNew(Lead lead) =>
+      !lead.seen &&
+      lastBatchAt != null &&
+      lead.collectedAt.compareTo(lastBatchAt!) >= 0;
+
+  Future<void> markSeen(Lead lead) async {
+    if (lead.seen || lead.id == null) return;
+    await repo.markSeen(lead.id!);
+    final i = leads.indexWhere((l) => l.id == lead.id);
+    if (i != -1) leads[i] = leads[i].copyWith(seen: true);
     notifyListeners();
   }
 
@@ -227,6 +267,18 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setStatusMany(Iterable<Lead> items, LeadStatus status) async {
+    final ids = items.where((l) => l.id != null).map((l) => l.id!).toList();
+    await repo.updateStatusMany(ids, status);
+    for (var i = 0; i < leads.length; i++) {
+      if (ids.contains(leads[i].id)) {
+        leads[i] = leads[i].copyWith(status: status);
+      }
+    }
+    stats = await repo.stats(freshDays: freshDays);
+    notifyListeners();
+  }
+
   // ---- sources CRUD ----
   Future<void> reloadSources() async {
     sources = await repo.allSources();
@@ -250,6 +302,36 @@ class AppState extends ChangeNotifier {
     await reloadSources();
   }
 
+  /// Imports shared sources, skipping any that match an existing source.
+  /// Matching is by a normalized URL (ignores scheme, host casing and a
+  /// trailing slash) so http/https and "/feed" vs "/feed/" count as the same.
+  /// Returns the number actually added.
+  Future<int> importSources(List<FeedSource> incoming) async {
+    final existing =
+        (await repo.allSources()).map((s) => _normUrl(s.url)).toSet();
+    var added = 0;
+    for (final s in incoming) {
+      final key = _normUrl(s.url);
+      if (key.isEmpty || existing.contains(key)) continue;
+      await repo.insertSource(s.copyWith(builtIn: false));
+      existing.add(key);
+      added++;
+    }
+    await reloadSources();
+    return added;
+  }
+
+  static String _normUrl(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return '';
+    final uri = Uri.tryParse(t);
+    if (uri == null || uri.host.isEmpty) return t.toLowerCase();
+    var path = uri.path;
+    if (path.endsWith('/')) path = path.substring(0, path.length - 1);
+    final q = uri.query;
+    return '${uri.host.toLowerCase()}$path${q.isEmpty ? '' : '?$q'}';
+  }
+
   // ---- settings ----
   Future<void> setAutoRefreshHourly(bool v) async {
     autoRefreshHourly = v;
@@ -268,6 +350,18 @@ class AppState extends ChangeNotifier {
 
   Future<void> setBiometricEnabled(bool v) async {
     await settings.setBiometricEnabled(v);
+    notifyListeners();
+  }
+
+  Future<void> setLockOnBackground(bool v) async {
+    lockOnBackground = v;
+    await settings.setLockOnBackground(v);
+    notifyListeners();
+  }
+
+  Future<void> setAutoLockMinutes(int v) async {
+    autoLockMinutes = v;
+    await settings.setAutoLockMinutes(v);
     notifyListeners();
   }
 
@@ -315,6 +409,12 @@ class AppState extends ChangeNotifier {
   }
 
   Future<List<Lead>> allLeadsForExport() => repo.query(const LeadQuery());
+
+  Future<void> setLeadView(LeadView v) async {
+    leadView = v;
+    await settings.setLeadView(v == LeadView.grid ? 'grid' : 'list');
+    notifyListeners();
+  }
 
   Future<void> setThemeMode(ThemeMode m) async {
     themeMode = m;

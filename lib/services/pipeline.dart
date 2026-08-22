@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import '../collectors/collector.dart';
 import '../collectors/rss_collector.dart';
 import '../collectors/worldbank_collector.dart';
@@ -50,24 +52,45 @@ class Pipeline {
         _collectors = collectors ??
             [RssCollector(), WorldBankCollector()];
 
+  /// How many sources to fetch at once. Bounded so we're fast without
+  /// hammering (and risking rate-limits from) Google News / World Bank.
+  static const _fetchConcurrency = 6;
+
   Future<PipelineOutcome> run({
     void Function(PipelineProgress)? onProgress,
   }) async {
     final sources = await repo.enabledSources();
+    var completed = 0;
+
+    // Phase 1 — fetch every source's network data concurrently (the slow part),
+    // capped at [_fetchConcurrency] in flight at a time.
+    final fetched = await _pool<FeedSource,
+        ({FeedSource source, CollectResult result})>(
+      sources,
+      _fetchConcurrency,
+      (source) async {
+        final collector = _collectors.firstWhere(
+          (c) => c.handles(source),
+          orElse: () => _NoopCollector(),
+        );
+        final result = await collector.fetch(source);
+        completed++;
+        onProgress?.call(PipelineProgress(
+            source.name, completed, sources.length, result.items.length));
+        return (source: source, result: result);
+      },
+    );
+
+    // Phase 2 — score + store sequentially so dedup stays race-free (SQLite
+    // writes are serial anyway; this is fast, local work).
     var newLeads = 0;
     var scanned = 0;
     var failed = 0;
     final newScores = <int>[];
 
-    for (var i = 0; i < sources.length; i++) {
-      final source = sources[i];
-      final collector = _collectors.firstWhere(
-        (c) => c.handles(source),
-        orElse: () => _NoopCollector(),
-      );
-      final result = await collector.fetch(source);
+    for (final f in fetched) {
+      final result = f.result;
       scanned += result.items.length;
-
       var newHere = 0;
       if (result.status == 'ok') {
         for (final raw in result.items) {
@@ -80,8 +103,7 @@ class Pipeline {
             detectedCountry: s.country,
             scoreReason: s.reasonText,
           );
-          final inserted = await repo.insertIfNew(scored);
-          if (inserted) {
+          if (await repo.insertIfNew(scored)) {
             newHere++;
             newScores.add(s.score);
           }
@@ -91,16 +113,13 @@ class Pipeline {
       }
       newLeads += newHere;
 
-      await repo.updateSource(source.copyWith(
+      await repo.updateSource(f.source.copyWith(
         lastStatus: result.status,
         lastError: result.error,
         lastFound: result.items.length,
         lastNew: newHere,
         lastRunAt: DateTime.now().toIso8601String(),
       ));
-
-      onProgress?.call(
-          PipelineProgress(source.name, i + 1, sources.length, newHere));
     }
 
     return PipelineOutcome(
@@ -111,6 +130,25 @@ class Pipeline {
       newScores: newScores,
       finishedAt: DateTime.now(),
     );
+  }
+
+  /// Runs [fn] over [items] with at most [concurrency] futures in flight,
+  /// preserving input order in the returned list.
+  static Future<List<R>> _pool<T, R>(
+      List<T> items, int concurrency, Future<R> Function(T) fn) async {
+    final results = List<R?>.filled(items.length, null);
+    var next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final i = next++;
+        if (i >= items.length) break;
+        results[i] = await fn(items[i]);
+      }
+    }
+
+    final n = items.isEmpty ? 0 : min(concurrency, items.length);
+    await Future.wait(List.generate(n, (_) => worker()));
+    return results.cast<R>();
   }
 
   /// Re-score every stored lead (e.g. after the user edits the vocabulary).

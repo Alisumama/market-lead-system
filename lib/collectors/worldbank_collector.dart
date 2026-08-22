@@ -47,39 +47,47 @@ class WorldBankCollector implements Collector {
     final errors = <String>[];
     final now = DateTime.now().toUtc().toIso8601String();
 
-    for (final c in _countries) {
-      try {
-        final uri = Uri.parse(source.url).replace(queryParameters: {
-          'format': 'json',
-          'rows': '$_rows',
-          'qterm': _qterm,
-          'project_ctry_name_exact': c[0],
-        });
-        final resp = await _client.get(uri, headers: {
-          'User-Agent': _userAgent,
-        }).timeout(const Duration(seconds: 45));
-        if (resp.statusCode != 200) {
-          errors.add('${c[1]}:HTTP ${resp.statusCode}');
-          continue;
-        }
-        final data = jsonDecode(resp.body) as Map<String, dynamic>;
-        final notices = (data['procnotices'] as List?) ?? const [];
-        for (final raw in notices) {
-          final n = raw as Map<String, dynamic>;
-          final lead = _fromNotice(n, c[1], now);
-          if (lead != null) items.add(lead);
-        }
-      } catch (e) {
-        errors.add('${c[1]}:$e');
-      }
-    }
+    // Query all target countries concurrently — each is an independent API
+    // call, so there's no reason to wait for one before starting the next.
+    await Future.wait(_countries.map((c) => _fetchCountry(source, c, now)
+        .then((r) {
+          items.addAll(r.items);
+          if (r.error != null) errors.add(r.error!);
+        })));
 
     if (items.isEmpty && errors.isNotEmpty) {
       return CollectResult.failure(errors.join('; '));
     }
     return CollectResult(items,
-        status: errors.isEmpty ? 'ok' : 'ok',
         error: errors.isEmpty ? null : errors.join('; '));
+  }
+
+  Future<({List<Lead> items, String? error})> _fetchCountry(
+      FeedSource source, List<String> c, String now) async {
+    try {
+      final uri = Uri.parse(source.url).replace(queryParameters: {
+        'format': 'json',
+        'rows': '$_rows',
+        'qterm': _qterm,
+        'project_ctry_name_exact': c[0],
+      });
+      final resp = await _client.get(uri, headers: {
+        'User-Agent': _userAgent,
+      }).timeout(const Duration(seconds: 45));
+      if (resp.statusCode != 200) {
+        return (items: <Lead>[], error: '${c[1]}:HTTP ${resp.statusCode}');
+      }
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final notices = (data['procnotices'] as List?) ?? const [];
+      final out = <Lead>[];
+      for (final raw in notices) {
+        final lead = _fromNotice(raw as Map<String, dynamic>, c[1], now);
+        if (lead != null) out.add(lead);
+      }
+      return (items: out, error: null);
+    } catch (e) {
+      return (items: <Lead>[], error: '${c[1]}:$e');
+    }
   }
 
   Lead? _fromNotice(Map<String, dynamic> n, String code, String now) {

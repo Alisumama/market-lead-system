@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../state/app_state.dart';
+import '../reports/reports_page.dart';
 import '../settings/settings_page.dart';
 import '../sources/sources_page.dart';
 import '../widgets/brand_logo.dart';
@@ -24,6 +25,7 @@ class _HomeShellState extends State<HomeShell> {
   static const _destinations = [
     (icon: Icons.dashboard_outlined, sel: Icons.dashboard, label: 'Leads'),
     (icon: Icons.rss_feed_outlined, sel: Icons.rss_feed, label: 'Sources'),
+    (icon: Icons.bar_chart_outlined, sel: Icons.bar_chart, label: 'Reports'),
     (icon: Icons.settings_outlined, sel: Icons.settings, label: 'Settings'),
   ];
 
@@ -44,7 +46,12 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = const [LeadsPage(), SourcesPage(), SettingsPage()];
+    final pages = const [
+      LeadsPage(),
+      SourcesPage(),
+      ReportsPage(),
+      SettingsPage()
+    ];
     final wide = MediaQuery.sizeOf(context).width >= 800;
 
     if (wide) {

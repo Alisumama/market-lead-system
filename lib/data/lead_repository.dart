@@ -9,51 +9,63 @@ import 'models/lead.dart';
 class LeadQuery {
   final String search;
   final int minScore;
-  final String? country; // matches country OR detected_country
+  final Set<String> countries; // matches country OR detected_country; empty=all
+  final Set<String> sourceNames; // matches source_name; empty=all
   final Set<LeadStatus> statuses;
   final Set<SourceKind> sources;
   final bool favoritesOnly;
   final bool freshOnly; // published within freshDays
   final int freshDays;
+  final String dateFrom; // yyyy-MM-dd, '' = unbounded (published_date)
+  final String dateTo; // yyyy-MM-dd, '' = unbounded
   final LeadSort sort;
 
   const LeadQuery({
     this.search = '',
     this.minScore = 0,
-    this.country,
+    this.countries = const {},
+    this.sourceNames = const {},
     this.statuses = const {},
     this.sources = const {},
     this.favoritesOnly = false,
     this.freshOnly = false,
     this.freshDays = 90,
+    this.dateFrom = '',
+    this.dateTo = '',
     this.sort = LeadSort.scoreDesc,
   });
+
+  bool get hasDateRange => dateFrom.isNotEmpty || dateTo.isNotEmpty;
 
   LeadQuery copyWith({
     String? search,
     int? minScore,
-    Object? country = _sentinel,
+    Set<String>? countries,
+    Set<String>? sourceNames,
     Set<LeadStatus>? statuses,
     Set<SourceKind>? sources,
     bool? favoritesOnly,
     bool? freshOnly,
     int? freshDays,
+    String? dateFrom,
+    String? dateTo,
     LeadSort? sort,
   }) {
     return LeadQuery(
       search: search ?? this.search,
       minScore: minScore ?? this.minScore,
-      country: country == _sentinel ? this.country : country as String?,
+      countries: countries ?? this.countries,
+      sourceNames: sourceNames ?? this.sourceNames,
       statuses: statuses ?? this.statuses,
       sources: sources ?? this.sources,
       favoritesOnly: favoritesOnly ?? this.favoritesOnly,
       freshOnly: freshOnly ?? this.freshOnly,
       freshDays: freshDays ?? this.freshDays,
+      dateFrom: dateFrom ?? this.dateFrom,
+      dateTo: dateTo ?? this.dateTo,
       sort: sort ?? this.sort,
     );
   }
-
-  static const _sentinel = Object();
 }
 
 enum LeadSort { scoreDesc, dateDesc, dateAsc, titleAsc }
@@ -77,15 +89,37 @@ class LeadRepository {
 
   // ---- Leads -------------------------------------------------------------
 
-  /// Inserts a lead if its url_hash is new. Returns true if inserted.
+  /// Inserts a lead if it's new. A lead is a duplicate if its exact url_hash
+  /// already exists (handled by the UNIQUE constraint) OR the same story has
+  /// already been stored from another feed (matched by normalized dedup_key).
+  /// Returns true only if a row was actually inserted.
   Future<bool> insertIfNew(Lead lead) async {
     final db = await _db;
+    final key = lead.dedupKey;
+    if (key.isNotEmpty) {
+      final dup = await db.query('leads',
+          columns: ['id'], where: 'dedup_key = ?', whereArgs: [key], limit: 1);
+      if (dup.isNotEmpty) return false; // same story, different feed/URL
+    }
     final id = await db.insert(
       'leads',
       lead.toMap(),
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
     return id != 0;
+  }
+
+  Future<void> markSeen(int id) async {
+    final db = await _db;
+    await db.update('leads', {'seen': 1}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> updateStatusMany(Iterable<int> ids, LeadStatus status) async {
+    if (ids.isEmpty) return;
+    final db = await _db;
+    final ph = List.filled(ids.length, '?').join(',');
+    await db.update('leads', {'status': status.storageValue},
+        where: 'id IN ($ph)', whereArgs: ids.toList());
   }
 
   Future<void> update(Lead lead) async {
@@ -127,9 +161,16 @@ class LeadRepository {
       where.add('score >= ?');
       args.add(q.minScore);
     }
-    if (q.country != null && q.country!.isNotEmpty) {
-      where.add('(country = ? OR detected_country = ?)');
-      args.addAll([q.country, q.country]);
+    if (q.countries.isNotEmpty) {
+      final ph = List.filled(q.countries.length, '?').join(',');
+      where.add('(country IN ($ph) OR detected_country IN ($ph))');
+      args.addAll(q.countries);
+      args.addAll(q.countries);
+    }
+    if (q.sourceNames.isNotEmpty) {
+      final ph = List.filled(q.sourceNames.length, '?').join(',');
+      where.add('source_name IN ($ph)');
+      args.addAll(q.sourceNames);
     }
     if (q.statuses.isNotEmpty) {
       final ph = List.filled(q.statuses.length, '?').join(',');
@@ -140,6 +181,14 @@ class LeadRepository {
       final ph = List.filled(q.sources.length, '?').join(',');
       where.add('source_type IN ($ph)');
       args.addAll(q.sources.map((s) => s.storageValue));
+    }
+    if (q.dateFrom.isNotEmpty) {
+      where.add("published_date != '' AND published_date >= ?");
+      args.add(q.dateFrom);
+    }
+    if (q.dateTo.isNotEmpty) {
+      where.add("published_date != '' AND published_date <= ?");
+      args.add(q.dateTo);
     }
     if (q.favoritesOnly) where.add('favorite = 1');
     if (q.freshOnly) {
@@ -200,6 +249,16 @@ class LeadRepository {
       ORDER BY c
     ''');
     return rows.map((r) => r['c'] as String).toList();
+  }
+
+  /// Distinct non-empty source names present across stored leads.
+  Future<List<String>> sourceNames() async {
+    final db = await _db;
+    final rows = await db.rawQuery(
+      "SELECT DISTINCT source_name AS s FROM leads "
+      "WHERE source_name != '' AND source_name IS NOT NULL ORDER BY s",
+    );
+    return rows.map((r) => r['s'] as String).toList();
   }
 
   // ---- Sources -----------------------------------------------------------
