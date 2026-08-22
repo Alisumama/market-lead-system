@@ -81,8 +81,13 @@ class AppState extends ChangeNotifier {
     query = query.copyWith(freshDays: freshDays);
     pipeline.scorer = KeywordScorer(await settings.scoringConfig());
 
-    // Show what's already stored immediately…
-    await _reload();
+    // Show what's already stored immediately… (never let a load error leave
+    // the UI stuck on a spinner).
+    try {
+      await _reload();
+    } catch (e) {
+      lastError = e.toString();
+    }
     loading = false;
     notifyListeners();
 
@@ -318,6 +323,9 @@ class AppState extends ChangeNotifier {
       added++;
     }
     await reloadSources();
+    // Newly imported feeds may bring new leads — fetch + rescore in the
+    // background so the Leads list updates (the corner chip shows progress).
+    if (added > 0) unawaited(refresh());
     return added;
   }
 

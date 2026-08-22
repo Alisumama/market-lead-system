@@ -200,13 +200,13 @@ class LeadRepository {
 
     final order = switch (q.sort) {
       LeadSort.scoreDesc =>
-        'score DESC, (published_date IS NULL OR published_date = ""), '
-            'published_date DESC, id DESC',
+        "score DESC, (published_date IS NULL OR published_date = ''), "
+            "published_date DESC, id DESC",
       LeadSort.dateDesc =>
-        '(published_date IS NULL OR published_date = ""), '
-            'published_date DESC, id DESC',
+        "(published_date IS NULL OR published_date = ''), "
+            "published_date DESC, id DESC",
       LeadSort.dateAsc =>
-        '(published_date IS NULL OR published_date = ""), published_date ASC',
+        "(published_date IS NULL OR published_date = ''), published_date ASC",
       LeadSort.titleAsc => 'title COLLATE NOCASE ASC',
     };
 
