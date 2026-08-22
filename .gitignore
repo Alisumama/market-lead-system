@@ -1,33 +1,70 @@
-# Secrets — never commit
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Visual Studio Code related
+.vscode/*
+!.vscode/settings.json
+
+# Flutter/Dart/Pub related
+**/doc/api/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+build/
+
+# Symbolication / obfuscation
+app.*.symbols
+app.*.map.json
+
+# Android
+/android/app/debug
+/android/app/profile
+/android/app/release
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+*.jks
+*.keystore
+
+# macOS
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/macos/Flutter/ephemeral/
+**/Pods/
+**/*.xcworkspace/xcuserdata/
+**/xcuserdata/
+
+# Windows
+**/windows/flutter/ephemeral/
+**/windows/flutter/generated_plugin_registrant.cc
+**/windows/flutter/generated_plugin_registrant.h
+**/windows/flutter/generated_plugins.cmake
+
+# Linux
+**/linux/flutter/ephemeral/
+
+# Secrets / local data — never commit
 .env
 *.env
-
-# Local database and generated exports
-intel.db
-*.db
-intel.db.bak-*
-leads.xlsx
-leads_*.xlsx
-*.zip
-
-# Logs
-*.log
-daily_run.log
-
-# Runtime lock
-run.lock
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# web/ (private dashboard auth gate — Vercel + Supabase). No secrets ever
-# live in checked-in files here (they're all in Vercel's Environment
-# Variables and the root .env), but these are local build/link artifacts.
-web/node_modules/
-web/.vercel/
-
-web/.env.local
-web/.env
