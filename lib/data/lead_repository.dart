@@ -9,8 +9,10 @@ import 'models/lead.dart';
 class LeadQuery {
   final String search;
   final int minScore;
+  final int maxScore; // 10 = no upper bound
   final Set<String> countries; // matches country OR detected_country; empty=all
   final Set<String> sourceNames; // matches source_name; empty=all
+  final Set<String> projectTypes; // matches project_type; empty=all
   final Set<LeadStatus> statuses;
   final Set<SourceKind> sources;
   final bool favoritesOnly;
@@ -23,8 +25,10 @@ class LeadQuery {
   const LeadQuery({
     this.search = '',
     this.minScore = 0,
+    this.maxScore = 10,
     this.countries = const {},
     this.sourceNames = const {},
+    this.projectTypes = const {},
     this.statuses = const {},
     this.sources = const {},
     this.favoritesOnly = false,
@@ -40,8 +44,10 @@ class LeadQuery {
   LeadQuery copyWith({
     String? search,
     int? minScore,
+    int? maxScore,
     Set<String>? countries,
     Set<String>? sourceNames,
+    Set<String>? projectTypes,
     Set<LeadStatus>? statuses,
     Set<SourceKind>? sources,
     bool? favoritesOnly,
@@ -54,8 +60,10 @@ class LeadQuery {
     return LeadQuery(
       search: search ?? this.search,
       minScore: minScore ?? this.minScore,
+      maxScore: maxScore ?? this.maxScore,
       countries: countries ?? this.countries,
       sourceNames: sourceNames ?? this.sourceNames,
+      projectTypes: projectTypes ?? this.projectTypes,
       statuses: statuses ?? this.statuses,
       sources: sources ?? this.sources,
       favoritesOnly: favoritesOnly ?? this.favoritesOnly,
@@ -160,6 +168,15 @@ class LeadRepository {
     if (q.minScore > 0) {
       where.add('score >= ?');
       args.add(q.minScore);
+    }
+    if (q.maxScore < 10) {
+      where.add('score <= ?');
+      args.add(q.maxScore);
+    }
+    if (q.projectTypes.isNotEmpty) {
+      final ph = List.filled(q.projectTypes.length, '?').join(',');
+      where.add('project_type IN ($ph)');
+      args.addAll(q.projectTypes);
     }
     if (q.countries.isNotEmpty) {
       final ph = List.filled(q.countries.length, '?').join(',');

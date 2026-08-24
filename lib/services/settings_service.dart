@@ -15,11 +15,15 @@ class SettingsService {
   static const _kFreshDays = 'fresh_days';
   static const _kLeadView = 'lead_view';
   static const _kLastBatchAt = 'last_batch_at';
+  static const _kBackground = 'background_refresh';
   static const _kDarkMode = 'dark_mode';
   static const _kNotifEnabled = 'notif_enabled';
   static const _kNotifAfterRefresh = 'notif_after_refresh';
   static const _kNotifOnlyNew = 'notif_only_new';
   static const _kNotifMinScore = 'notif_min_score';
+  static const _kScoringConfig = 'scoring_config_v2';
+  static const _kRejectStats = 'reject_stats_v1';
+  static const _kRuleProfiles = 'rule_profiles_v1';
   static const _kFacility = 'vocab_facility';
   static const _kIntent = 'vocab_intent';
   static const _kNegative = 'vocab_negative';
@@ -51,6 +55,11 @@ class SettingsService {
   Future<String?> lastBatchAt() => _store.read(key: _kLastBatchAt);
   Future<void> setLastBatchAt(String iso) =>
       _store.write(key: _kLastBatchAt, value: iso);
+
+  Future<bool> backgroundEnabled() async =>
+      (await _store.read(key: _kBackground) ?? 'false') == 'true';
+  Future<void> setBackgroundEnabled(bool v) =>
+      _store.write(key: _kBackground, value: '$v');
 
   // ---- Notifications ----
   Future<bool> notifEnabled() async =>
@@ -84,32 +93,74 @@ class SettingsService {
       ? _store.delete(key: _kDarkMode)
       : _store.write(key: _kDarkMode, value: '$v');
 
-  // ---- Scoring vocabulary ----
+  // ---- Scoring / rules engine (stored as one JSON blob) ----
   Future<ScoringConfig> scoringConfig() async {
-    return ScoringConfig(
-      facilityTerms:
-          await _readList(_kFacility, KeywordScorer.defaultFacilityTerms),
-      intentTerms: await _readList(_kIntent, KeywordScorer.defaultIntentTerms),
-      negativeTerms:
-          await _readList(_kNegative, KeywordScorer.defaultNegativeTerms),
-      relevanceCutoff:
-          int.tryParse(await _store.read(key: _kCutoff) ?? '') ?? 4,
-    );
+    final raw = await _store.read(key: _kScoringConfig);
+    if (raw == null || raw.isEmpty) {
+      // Migrate the old piecemeal vocab keys if present.
+      final legacyFac = await _store.read(key: _kFacility);
+      if (legacyFac != null) {
+        return ScoringConfig(
+          facilityTerms:
+              await _readList(_kFacility, KeywordScorer.defaultFacilityTerms),
+          intentTerms:
+              await _readList(_kIntent, KeywordScorer.defaultIntentTerms),
+          negativeTerms:
+              await _readList(_kNegative, KeywordScorer.defaultNegativeTerms),
+          relevanceCutoff:
+              int.tryParse(await _store.read(key: _kCutoff) ?? '') ?? 4,
+        );
+      }
+      return const ScoringConfig();
+    }
+    try {
+      return ScoringConfig.fromJson(
+          jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return const ScoringConfig();
+    }
   }
 
   Future<void> saveScoringConfig(ScoringConfig c) async {
-    await _store.write(key: _kFacility, value: jsonEncode(c.facilityTerms));
-    await _store.write(key: _kIntent, value: jsonEncode(c.intentTerms));
-    await _store.write(key: _kNegative, value: jsonEncode(c.negativeTerms));
-    await _store.write(key: _kCutoff, value: '${c.relevanceCutoff}');
+    await _store.write(key: _kScoringConfig, value: jsonEncode(c.toJson()));
   }
 
   Future<void> resetScoringConfig() async {
-    await _store.delete(key: _kFacility);
-    await _store.delete(key: _kIntent);
-    await _store.delete(key: _kNegative);
-    await _store.delete(key: _kCutoff);
+    await _store.delete(key: _kScoringConfig);
   }
+
+  // ---- rejection stats (last pipeline run) ----
+
+  Future<void> saveRejectStats(Map<String, dynamic> json) =>
+      _store.write(key: _kRejectStats, value: jsonEncode(json));
+
+  Future<Map<String, dynamic>?> rejectStats() async {
+    final raw = await _store.read(key: _kRejectStats);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return (jsonDecode(raw) as Map).cast<String, dynamic>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ---- named rule profiles ----
+
+  Future<List<RuleProfile>> ruleProfiles() async {
+    final raw = await _store.read(key: _kRuleProfiles);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => RuleProfile.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> saveRuleProfiles(List<RuleProfile> profiles) => _store.write(
+      key: _kRuleProfiles,
+      value: jsonEncode([for (final p in profiles) p.toJson()]));
 
   Future<List<String>> _readList(String key, List<String> fallback) async {
     final raw = await _store.read(key: key);

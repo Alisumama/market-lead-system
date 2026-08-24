@@ -21,6 +21,8 @@ class PipelineOutcome {
   final int sourcesFailed;
   final int newLeads;
   final int scanned;
+  final int rejected; // items dropped by the acceptance rules
+  final Map<RejectReason, int> rejectedByReason; // breakdown of [rejected]
   final List<int> newScores; // scores of the newly-inserted leads
   final DateTime finishedAt;
   const PipelineOutcome({
@@ -28,12 +30,29 @@ class PipelineOutcome {
     required this.sourcesFailed,
     required this.newLeads,
     required this.scanned,
+    this.rejected = 0,
+    this.rejectedByReason = const {},
     required this.newScores,
     required this.finishedAt,
   });
 
   int newAtOrAbove(int minScore) =>
       minScore <= 0 ? newLeads : newScores.where((s) => s >= minScore).length;
+}
+
+/// Result of testing the current (possibly unsaved) rules against the leads
+/// already in the database — a preview of what tightening the rules would drop.
+class DryRunResult {
+  final int total;
+  final int kept;
+  final int dropped;
+  final Map<RejectReason, int> byReason;
+  const DryRunResult({
+    required this.total,
+    required this.kept,
+    required this.dropped,
+    required this.byReason,
+  });
 }
 
 /// Orchestrates collect -> score -> store for every enabled source.
@@ -86,6 +105,8 @@ class Pipeline {
     var newLeads = 0;
     var scanned = 0;
     var failed = 0;
+    var rejected = 0;
+    final rejectedByReason = <RejectReason, int>{};
     final newScores = <int>[];
 
     for (final f in fetched) {
@@ -94,7 +115,27 @@ class Pipeline {
       var newHere = 0;
       if (result.status == 'ok') {
         for (final raw in result.items) {
-          final s = scorer.score(title: raw.title, summary: raw.summary);
+          final s = scorer.score(
+            title: raw.title,
+            summary: raw.summary,
+            publishedDate: raw.publishedDate,
+            sourceKind: raw.sourceType,
+          );
+          // Acceptance gate — drop items the rules reject before storing.
+          final reason = scorer.reject(
+            title: raw.title,
+            summary: raw.summary,
+            publishedDate: raw.publishedDate,
+            country: raw.country,
+            language: raw.language,
+            sourceKind: raw.sourceType,
+            score: s.score,
+          );
+          if (reason != null) {
+            rejected++;
+            rejectedByReason[reason] = (rejectedByReason[reason] ?? 0) + 1;
+            continue;
+          }
           final scored = raw.copyWith(
             score: s.score,
             isRelevant: s.isRelevant,
@@ -127,8 +168,50 @@ class Pipeline {
       sourcesFailed: failed,
       newLeads: newLeads,
       scanned: scanned,
+      rejected: rejected,
+      rejectedByReason: rejectedByReason,
       newScores: newScores,
       finishedAt: DateTime.now(),
+    );
+  }
+
+  /// Tests [config] (typically the user's unsaved edits) against every stored
+  /// lead and reports how many it would keep vs drop, and why. Non-destructive:
+  /// nothing is written. Note it can only evaluate leads already stored — items
+  /// the *current* rules rejected were never saved, so they can't reappear here.
+  Future<DryRunResult> dryRun(ScoringConfig config) async {
+    final scorer = KeywordScorer(config);
+    final leads = await repo.query(const LeadQuery());
+    var kept = 0, dropped = 0;
+    final byReason = <RejectReason, int>{};
+    for (final l in leads) {
+      final s = scorer.score(
+        title: l.title,
+        summary: l.summary,
+        publishedDate: l.publishedDate,
+        sourceKind: l.sourceType,
+      );
+      final r = scorer.reject(
+        title: l.title,
+        summary: l.summary,
+        publishedDate: l.publishedDate,
+        country: l.detectedCountry.isNotEmpty ? l.detectedCountry : l.country,
+        language: l.language,
+        sourceKind: l.sourceType,
+        score: s.score,
+      );
+      if (r == null) {
+        kept++;
+      } else {
+        dropped++;
+        byReason[r] = (byReason[r] ?? 0) + 1;
+      }
+    }
+    return DryRunResult(
+      total: leads.length,
+      kept: kept,
+      dropped: dropped,
+      byReason: byReason,
     );
   }
 

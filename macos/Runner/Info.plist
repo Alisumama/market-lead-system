@@ -30,5 +30,10 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Run the platform and UI on separate threads. The experimental merged
+	     thread (default in recent Flutter) has a keyboard-input bug where
+	     TextFields don't receive typed characters on macOS. -->
+	<key>FLTEnableMergedPlatformUIThread</key>
+	<false/>
 </dict>
 </plist>

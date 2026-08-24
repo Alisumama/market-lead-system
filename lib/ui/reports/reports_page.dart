@@ -4,6 +4,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/lead_repository.dart';
 import '../../data/models/lead.dart';
 import '../../data/reports_repository.dart';
 import '../../services/export_service.dart';
@@ -175,6 +176,9 @@ class _ReportsPageState extends State<ReportsPage> {
 
   Widget _body(BuildContext context, _ReportsData d) {
     final o = d.overview;
+    final freshDays = context.read<AppState>().freshDays;
+    void drill(LeadQuery q) => context.read<AppState>().showLeadsFiltered(q);
+    final ordered = _statusOrdered(d.status);
 
     final gauge = _SectionCard(
       title: 'Average score',
@@ -184,7 +188,10 @@ class _ReportsPageState extends State<ReportsPage> {
     final scoreCard = _SectionCard(
       title: 'Score distribution',
       icon: Icons.insights,
-      child: _ScoreBars(hist: d.scoreHist),
+      child: _ScoreBars(
+        hist: d.scoreHist,
+        onTapScore: (i) => drill(LeadQuery(minScore: i, maxScore: i)),
+      ),
     );
     final pipelineCard = _SectionCard(
       title: 'Pipeline',
@@ -193,10 +200,12 @@ class _ReportsPageState extends State<ReportsPage> {
         centerTop: '${o.total}',
         centerBottom: 'leads',
         data: [
-          for (final s in _statusOrdered(d.status))
+          for (final s in ordered)
             (LeadStatusX.fromStorage(s.label).label, s.count,
                 _statusColor(s.label)),
         ],
+        onTapItem: (i) => drill(
+            LeadQuery(statuses: {LeadStatusX.fromStorage(ordered[i].label)})),
       ),
     );
     final projectCard = _SectionCard(
@@ -210,6 +219,10 @@ class _ReportsPageState extends State<ReportsPage> {
             (d.projectTypes[i].label, d.projectTypes[i].count,
                 _palette[i % _palette.length]),
         ],
+        onTapItem: (i) {
+          final label = d.projectTypes[i].label;
+          drill(LeadQuery(projectTypes: {label == 'none' ? '' : label}));
+        },
       ),
     );
     final bandsCard = _SectionCard(
@@ -223,6 +236,7 @@ class _ReportsPageState extends State<ReportsPage> {
       child: _ProgressList(
         rows: [for (final c in d.countries) (c.label, c.count, c.hot)],
         colorForIndex: (i) => _palette[i % _palette.length],
+        onTapItem: (i) => drill(LeadQuery(countries: {d.countries[i].label})),
       ),
     );
     final companiesCard = d.companies.isEmpty
@@ -233,6 +247,7 @@ class _ReportsPageState extends State<ReportsPage> {
             child: _ProgressList(
               rows: [for (final c in d.companies) (c.label, c.count, 0)],
               colorForIndex: (i) => Colors.blueGrey,
+              onTapItem: (i) => drill(LeadQuery(search: d.companies[i].label)),
             ),
           );
     final trendCard = _SectionCard(
@@ -249,7 +264,10 @@ class _ReportsPageState extends State<ReportsPage> {
     final sourcesCard = _SectionCard(
       title: 'Source performance',
       icon: Icons.rss_feed,
-      child: _SourceList(sources: d.sources),
+      child: _SourceList(
+        sources: d.sources,
+        onTapItem: (i) => drill(LeadQuery(sourceNames: {d.sources[i].name})),
+      ),
     );
 
     return LayoutBuilder(builder: (context, c) {
@@ -257,7 +275,7 @@ class _ReportsPageState extends State<ReportsPage> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _HeroRow(o: o),
+          _HeroRow(o: o, freshDays: freshDays, onDrill: drill),
           const SizedBox(height: 2),
           if (wide) ...[
             _row(gauge, scoreCard),
@@ -374,20 +392,27 @@ class _ReportsPageState extends State<ReportsPage> {
 
 class _HeroRow extends StatelessWidget {
   final ReportOverview o;
-  const _HeroRow({required this.o});
+  final int freshDays;
+  final void Function(LeadQuery) onDrill;
+  const _HeroRow(
+      {required this.o, required this.freshDays, required this.onDrill});
 
   @override
   Widget build(BuildContext context) {
     final total = o.total == 0 ? 1 : o.total;
     final cards = [
       _HeroStat('Total leads', o.total, '${o.relevant} relevant',
-          o.relevant / total, const Color(0xFF6C63FF), Icons.inbox_rounded),
+          o.relevant / total, const Color(0xFF6C63FF), Icons.inbox_rounded,
+          () => onDrill(const LeadQuery())),
       _HeroStat('Hot (8+)', o.hot, 'of total', o.hot / total,
-          AppTheme.brandGreen, Icons.local_fire_department),
+          AppTheme.brandGreen, Icons.local_fire_department,
+          () => onDrill(const LeadQuery(minScore: 8))),
       _HeroStat('Warm (4–7)', o.warm, 'of total', o.warm / total,
-          const Color(0xFFE8A317), Icons.trending_up),
+          const Color(0xFFE8A317), Icons.trending_up,
+          () => onDrill(const LeadQuery(minScore: 4, maxScore: 7))),
       _HeroStat('Fresh', o.fresh, 'avg ${o.avgScore.toStringAsFixed(1)}',
-          o.fresh / total, const Color(0xFF00BCD4), Icons.schedule),
+          o.fresh / total, const Color(0xFF00BCD4), Icons.schedule,
+          () => onDrill(LeadQuery(freshOnly: true, freshDays: freshDays))),
     ];
     return LayoutBuilder(builder: (context, c) {
       const gap = 14.0;
@@ -408,27 +433,34 @@ class _HeroStat extends StatelessWidget {
   final double percent;
   final Color color;
   final IconData icon;
-  const _HeroStat(
-      this.label, this.value, this.sub, this.percent, this.color, this.icon);
+  final VoidCallback onTap;
+  const _HeroStat(this.label, this.value, this.sub, this.percent, this.color,
+      this.icon, this.onTap);
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(16),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            color.withValues(alpha: 0.16),
-            color.withValues(alpha: 0.04),
-          ],
-        ),
-        border: Border.all(color: color.withValues(alpha: 0.22)),
-      ),
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-      child: Row(
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                color.withValues(alpha: 0.16),
+                color.withValues(alpha: 0.04),
+              ],
+            ),
+            border: Border.all(color: color.withValues(alpha: 0.22)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Row(
         children: [
           Expanded(
             child: Column(
@@ -467,6 +499,8 @@ class _HeroStat extends StatelessWidget {
           const SizedBox(width: 8),
           _PercentRing(percent: percent.clamp(0, 1), color: color, size: 52),
         ],
+          ),
+        ),
       ),
     );
   }
@@ -742,7 +776,8 @@ class _RangeSelector extends StatelessWidget {
 
 class _ScoreBars extends StatelessWidget {
   final List<int> hist;
-  const _ScoreBars({required this.hist});
+  final void Function(int score)? onTapScore;
+  const _ScoreBars({required this.hist, this.onTapScore});
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -759,6 +794,13 @@ class _ScoreBars extends StatelessWidget {
                   const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.w700)),
             ),
+            touchCallback: (event, resp) {
+              if (event is FlTapUpEvent &&
+                  resp?.spot != null &&
+                  onTapScore != null) {
+                onTapScore!(resp!.spot!.touchedBarGroup.x);
+              }
+            },
           ),
           gridData: FlGridData(
             show: true,
@@ -1116,10 +1158,12 @@ class _Donut extends StatelessWidget {
   final List<(String, int, Color)> data;
   final String centerTop;
   final String centerBottom;
+  final void Function(int index)? onTapItem;
   const _Donut(
       {required this.data,
       required this.centerTop,
-      required this.centerBottom});
+      required this.centerBottom,
+      this.onTapItem});
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1162,30 +1206,34 @@ class _Donut extends StatelessWidget {
         Expanded(
           child: Column(
             children: [
-              for (final d in data)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3),
-                  child: Row(children: [
-                    Container(
-                        width: 10,
-                        height: 10,
-                        decoration:
-                            BoxDecoration(color: d.$3, shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: Text(d.$1,
-                            maxLines: 1, overflow: TextOverflow.ellipsis)),
-                    Text('${d.$2}',
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
-                    const SizedBox(width: 6),
-                    SizedBox(
-                      width: 38,
-                      child: Text('${(d.$2 / total * 100).round()}%',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                              fontSize: 11, color: scheme.onSurfaceVariant)),
-                    ),
-                  ]),
+              for (var i = 0; i < data.length; i++)
+                InkWell(
+                  onTap: onTapItem == null ? null : () => onTapItem!(i),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(children: [
+                      Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                              color: data[i].$3, shape: BoxShape.circle)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: Text(data[i].$1,
+                              maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      Text('${data[i].$2}',
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
+                      const SizedBox(width: 6),
+                      SizedBox(
+                        width: 38,
+                        child: Text('${(data[i].$2 / total * 100).round()}%',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(
+                                fontSize: 11, color: scheme.onSurfaceVariant)),
+                      ),
+                    ]),
+                  ),
                 ),
             ],
           ),
@@ -1198,7 +1246,9 @@ class _Donut extends StatelessWidget {
 class _ProgressList extends StatelessWidget {
   final List<(String, int, int)> rows;
   final Color Function(int index) colorForIndex;
-  const _ProgressList({required this.rows, required this.colorForIndex});
+  final void Function(int index)? onTapItem;
+  const _ProgressList(
+      {required this.rows, required this.colorForIndex, this.onTapItem});
   @override
   Widget build(BuildContext context) {
     if (rows.isEmpty) return const _Empty();
@@ -1207,7 +1257,10 @@ class _ProgressList extends StatelessWidget {
     return Column(
       children: [
         for (var i = 0; i < rows.length; i++)
-          Padding(
+          InkWell(
+            onTap: onTapItem == null ? null : () => onTapItem!(i),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1243,6 +1296,7 @@ class _ProgressList extends StatelessWidget {
               ],
             ),
           ),
+          ),
       ],
     );
   }
@@ -1250,7 +1304,8 @@ class _ProgressList extends StatelessWidget {
 
 class _SourceList extends StatelessWidget {
   final List<SourcePerf> sources;
-  const _SourceList({required this.sources});
+  final void Function(int index)? onTapItem;
+  const _SourceList({required this.sources, this.onTapItem});
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1259,7 +1314,10 @@ class _SourceList extends StatelessWidget {
     return Column(
       children: [
         for (var i = 0; i < sources.length; i++)
-          Padding(
+          InkWell(
+            onTap: onTapItem == null ? null : () => onTapItem!(i),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Row(children: [
               CircleAvatar(
@@ -1305,6 +1363,7 @@ class _SourceList extends StatelessWidget {
                 ],
               ),
             ]),
+          ),
           ),
       ],
     );

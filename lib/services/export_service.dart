@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../data/models/feed_source.dart';
 import '../data/models/lead.dart';
+import '../scoring/keyword_scorer.dart';
 import '../util/text.dart';
 import 'exporter.dart';
 import 'file_service.dart';
@@ -166,6 +167,30 @@ class ExportService {
     final bytes = utf8.encode(const JsonEncoder.withIndent('  ').convert(data));
     return _fs.save(
         fileName: 'bastak_sources_${_stamp()}.json', bytes: bytes, ext: 'json');
+  }
+
+  // ---------------- Scoring / rules config ----------------
+
+  Future<String?> exportScoringConfig(ScoringConfig c) async {
+    final data = {
+      'app': 'bastak_leads',
+      'kind': 'rules',
+      'version': 1,
+      'exportedAt': DateTime.now().toUtc().toIso8601String(),
+      'config': c.toJson(),
+    };
+    final bytes = utf8.encode(const JsonEncoder.withIndent('  ').convert(data));
+    return _fs.save(
+        fileName: 'bastak_rules_${_stamp()}.json', bytes: bytes, ext: 'json');
+  }
+
+  /// Opens a shared rules file (.json) and parses it. Returns null if cancelled.
+  Future<ScoringConfig?> importScoringConfig() async {
+    final picked = await _fs.open(['json']);
+    if (picked == null) return null;
+    final data = jsonDecode(utf8.decode(picked.bytes, allowMalformed: true));
+    final cfg = (data is Map && data['config'] is Map) ? data['config'] : data;
+    return ScoringConfig.fromJson((cfg as Map).cast<String, dynamic>());
   }
 
   /// Generic text export (used by the Reports digest).

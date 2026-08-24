@@ -22,6 +22,8 @@ PODS:
     - FlutterMacOS
   - url_launcher_macos (0.0.1):
     - FlutterMacOS
+  - workmanager_apple (0.0.1):
+    - FlutterMacOS
 
 DEPENDENCIES:
   - file_picker_darwin (from `Flutter/ephemeral/.symlinks/plugins/file_picker_darwin/darwin`)
@@ -34,6 +36,7 @@ DEPENDENCIES:
   - share_plus (from `Flutter/ephemeral/.symlinks/plugins/share_plus/macos`)
   - sqflite_darwin (from `Flutter/ephemeral/.symlinks/plugins/sqflite_darwin/darwin`)
   - url_launcher_macos (from `Flutter/ephemeral/.symlinks/plugins/url_launcher_macos/macos`)
+  - workmanager_apple (from `Flutter/ephemeral/.symlinks/plugins/workmanager_apple/macos`)
 
 EXTERNAL SOURCES:
   file_picker_darwin:
@@ -56,6 +59,8 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/sqflite_darwin/darwin
   url_launcher_macos:
     :path: Flutter/ephemeral/.symlinks/plugins/url_launcher_macos/macos
+  workmanager_apple:
+    :path: Flutter/ephemeral/.symlinks/plugins/workmanager_apple/macos
 
 SPEC CHECKSUMS:
   file_picker_darwin: 49d73317e75d1828d33a2a50338c6caebd6e24ff
@@ -68,6 +73,7 @@ SPEC CHECKSUMS:
   share_plus: 1fa619de8392a4398bfaf176d441853922614e89
   sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
   url_launcher_macos: 175a54c831f4375a6cf895875f716ee5af3888ce
+  workmanager_apple: 06d28603f6f03c74954532deea7d445900d4909e
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
 

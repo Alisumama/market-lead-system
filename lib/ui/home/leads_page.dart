@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -97,10 +99,7 @@ class _LeadsPageState extends State<LeadsPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return Scaffold(
-      body: RefreshIndicator(
-        onRefresh: () => state.refresh(),
-        child: CustomScrollView(
+    final scroll = CustomScrollView(
           slivers: [
             if (_selecting) _selectionAppBar(state) else _normalAppBar(state),
             SliverToBoxAdapter(child: _StatsRow(stats: state.stats)),
@@ -148,8 +147,14 @@ class _LeadsPageState extends State<LeadsPage> {
                 ),
               ),
           ],
-        ),
-      ),
+        );
+    // Pull-to-refresh only makes sense on touch (Android); desktop uses the
+    // Refresh button instead.
+    final mobile = Platform.isAndroid || Platform.isIOS;
+    return Scaffold(
+      body: mobile
+          ? RefreshIndicator(onRefresh: () => state.refresh(), child: scroll)
+          : scroll,
     );
   }
 
@@ -404,9 +409,13 @@ class _MinScoreChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final v = state.query.minScore;
+    final maxV = state.query.maxScore;
+    final label = maxV < 10
+        ? 'Score $v–$maxV'
+        : (v == 0 ? 'Any score' : 'Score ≥ $v');
     return ActionChip(
       avatar: const Icon(Icons.filter_alt_outlined, size: 16),
-      label: Text(v == 0 ? 'Any score' : 'Score ≥ $v'),
+      label: Text(label),
       onPressed: () async {
         final picked = await showModalBottomSheet<int>(
           context: context,

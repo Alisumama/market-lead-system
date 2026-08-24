@@ -6,6 +6,7 @@ import '../data/lead_repository.dart';
 import '../data/models/feed_source.dart';
 import '../data/models/lead.dart';
 import '../scoring/keyword_scorer.dart';
+import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/pipeline.dart';
 import '../services/settings_service.dart';
@@ -58,6 +59,10 @@ class AppState extends ChangeNotifier {
 
   bool lockOnBackground = true;
   int autoLockMinutes = 5;
+  bool backgroundEnabled = false;
+
+  late final BackgroundService background = BackgroundService(settings);
+  bool get backgroundSupported => background.supported;
 
   Timer? _timer;
 
@@ -70,6 +75,7 @@ class AppState extends ChangeNotifier {
     notifMinScore = await settings.notifMinScore();
     lockOnBackground = await settings.lockOnBackground();
     autoLockMinutes = await settings.autoLockMinutes();
+    backgroundEnabled = await settings.backgroundEnabled();
     leadView =
         (await settings.leadView()) == 'grid' ? LeadView.grid : LeadView.list;
     lastBatchAt = await settings.lastBatchAt();
@@ -141,6 +147,15 @@ class AppState extends ChangeNotifier {
         notifyListeners();
       });
       lastOutcome = outcome;
+      await settings.saveRejectStats({
+        'at': outcome.finishedAt.toIso8601String(),
+        'scanned': outcome.scanned,
+        'newLeads': outcome.newLeads,
+        'rejected': outcome.rejected,
+        'byReason': {
+          for (final e in outcome.rejectedByReason.entries) e.key.name: e.value
+        },
+      });
       refreshStatus = outcome.newLeads > 0
           ? '${outcome.newLeads} new lead(s)'
           : 'Up to date';
@@ -194,12 +209,16 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> setSearch(String s) => applyQuery(query.copyWith(search: s));
-  Future<void> setMinScore(int v) => applyQuery(query.copyWith(minScore: v));
+  // Picking a minimum via the chip clears any drill-down upper bound.
+  Future<void> setMinScore(int v) =>
+      applyQuery(query.copyWith(minScore: v, maxScore: 10));
   Future<void> setSort(LeadSort s) => applyQuery(query.copyWith(sort: s));
   Future<void> setCountries(Set<String> c) =>
       applyQuery(query.copyWith(countries: c));
   Future<void> setSourceNames(Set<String> s) =>
       applyQuery(query.copyWith(sourceNames: s));
+  Future<void> setProjectTypes(Set<String> p) =>
+      applyQuery(query.copyWith(projectTypes: p));
   Future<void> toggleFreshOnly(bool v) =>
       applyQuery(query.copyWith(freshOnly: v));
   Future<void> setDateRange(String from, String to) =>
@@ -208,6 +227,20 @@ class AppState extends ChangeNotifier {
       applyQuery(query.copyWith(favoritesOnly: v));
   Future<void> setStatusFilter(Set<LeadStatus> s) =>
       applyQuery(query.copyWith(statuses: s));
+
+  // ---- report drill-down: apply a fresh filter and jump to the Leads tab ----
+  int? pendingTab;
+  void requestTab(int i) {
+    pendingTab = i;
+    notifyListeners();
+  }
+
+  void consumeTabRequest() => pendingTab = null;
+
+  Future<void> showLeadsFiltered(LeadQuery q) async {
+    await applyQuery(q);
+    requestTab(0); // Leads is index 0 in the shell
+  }
 
   // ---- lead editing (full user control) ----
   Future<void> _saveLead(Lead lead) async {
@@ -373,6 +406,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> setBackgroundEnabled(bool v) async {
+    backgroundEnabled = await background.setEnabled(v);
+    notifyListeners();
+    return backgroundEnabled;
+  }
+
   // ---- notifications ----
   /// Enables notifications, requesting OS permission first. Returns whether it
   /// ended up enabled (permission may be denied).
@@ -438,6 +477,17 @@ class AppState extends ChangeNotifier {
   }
 
   Future<ScoringConfig> scoringConfig() => settings.scoringConfig();
+
+  /// Rejection breakdown of the last pipeline run (persisted across restarts).
+  Future<Map<String, dynamic>?> rejectStats() => settings.rejectStats();
+
+  /// Non-destructive preview of what [c] would keep/drop against stored leads.
+  Future<DryRunResult> dryRunRules(ScoringConfig c) => pipeline.dryRun(c);
+
+  Future<List<RuleProfile>> ruleProfiles() => settings.ruleProfiles();
+
+  Future<void> saveRuleProfiles(List<RuleProfile> p) =>
+      settings.saveRuleProfiles(p);
 
   @override
   void dispose() {

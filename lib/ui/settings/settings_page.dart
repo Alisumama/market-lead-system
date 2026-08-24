@@ -8,7 +8,6 @@ import '../widgets/app_bar_bits.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/format_picker.dart';
 import '../widgets/version_text.dart';
-import 'scoring_editor.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -74,6 +73,25 @@ class SettingsPage extends StatelessWidget {
                   value: state.autoRefreshHourly,
                   onChanged: state.setAutoRefreshHourly,
                 ),
+                if (state.backgroundSupported) ...[
+                  const Divider(height: 1),
+                  SwitchListTile(
+                    secondary: const Icon(Icons.cloud_sync_outlined),
+                    title: const Text('Background refresh'),
+                    subtitle: const Text(
+                        'Keep collecting hourly even when the app is closed'),
+                    value: state.backgroundEnabled,
+                    onChanged: (v) async {
+                      final ok = await state.setBackgroundEnabled(v);
+                      if (v && !ok && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Could not enable background refresh on this device.')));
+                      }
+                    },
+                  ),
+                ],
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.refresh),
@@ -114,44 +132,6 @@ class SettingsPage extends StatelessWidget {
               _section(context, 'Notifications'),
               _card(context, [_NotificationSettings(state: state)]),
 
-              _section(context, 'Scoring'),
-              _card(context, [
-                ListTile(
-                  leading: const Icon(Icons.tune),
-                  title: const Text('Keyword vocabulary'),
-                  subtitle: const Text(
-                      'Tune the facility / intent / negative terms used to score leads'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const ScoringEditorPage()),
-                  ),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.calculate_outlined),
-                  title: const Text('Re-score all leads'),
-                  subtitle: const Text(
-                      'Apply the current keywords to every stored lead (skips ones you overrode)'),
-                  trailing: state.refreshing
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.chevron_right),
-                  onTap: state.refreshing
-                      ? null
-                      : () async {
-                          await state.rescoreAll();
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(state.refreshStatus ??
-                                'Re-scored')),
-                          );
-                        },
-                ),
-              ]),
 
               _section(context, 'Data management'),
               _card(context, [_DataManagementTile(state: state)]),
@@ -242,7 +222,8 @@ class _SecurityTile extends StatelessWidget {
         SwitchListTile(
           secondary: const Icon(Icons.lock_clock_outlined),
           title: const Text('Lock when app goes to background'),
-          subtitle: const Text('Require unlock again when you return'),
+          subtitle: const Text(
+              'Require unlock again when you return (mobile only)'),
           value: state.lockOnBackground,
           onChanged: state.setLockOnBackground,
         ),
