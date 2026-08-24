@@ -8,6 +8,14 @@
 ;   /DVersionInfo=2.1.1.2     four-part version stamped into setup.exe
 ;   /DBuildDir=<path>         the built Release folder to package
 ;   /DOutputDir=<path>        where to drop the finished installer
+;   /DBrandingDir=<path>      wizard bitmaps from tool\make_installer_branding.ps1
+;   /DAppDataDir=<rel path>   the app's data folder under %APPDATA%. Derived by
+;                             the build script from CompanyName\ProductName in
+;                             windows\runner\Runner.rc, because that pair is what
+;                             path_provider uses for getApplicationSupportDirectory().
+;                             Hardcoding it here let it silently go stale once
+;                             ProductName changed, leaving the uninstaller
+;                             pointed at a folder that no longer existed.
 
 #ifndef AppVersion
   #error AppVersion must be defined on the command line
@@ -15,13 +23,16 @@
 #ifndef BuildDir
   #error BuildDir must be defined on the command line
 #endif
+#ifndef BrandingDir
+  #error BrandingDir must be defined on the command line
+#endif
+#ifndef AppDataDir
+  #error AppDataDir must be defined on the command line
+#endif
 
 #define AppName        "Bastak Leads"
-#define AppPublisher   "Bastak"
+#define AppPublisher   "Bastak Instruments"
 #define AppExeName     "bastak_leads.exe"
-; Data directory used by path_provider's getApplicationSupportDirectory(),
-; derived from the exe's CompanyName/ProductName in windows/runner/Runner.rc.
-#define AppDataDir     "com.bastak\bastak_leads"
 
 [Setup]
 ; This GUID identifies the application across versions -- never change it, or
@@ -31,8 +42,11 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright=Copyright (C) 2026 {#AppPublisher}
 VersionInfoVersion={#VersionInfo}
 VersionInfoProductName={#AppName}
+VersionInfoCompany={#AppPublisher}
+VersionInfoDescription={#AppName} Setup
 
 ; Let the user choose "just me" (no admin) or "all users" (admin prompt).
 ; {autopf} then resolves to %LOCALAPPDATA%\Programs or Program Files to match.
@@ -42,6 +56,12 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
+
+; WizardStyle=modern defaults DisableWelcomePage to yes, which would drop the
+; only page that shows the full-height brand panel. Turn it back on, and let
+; the user pick the install folder rather than silently using the default.
+DisableWelcomePage=no
+DisableDirPage=no
 
 ; The Flutter engine is x64-only.
 ArchitecturesAllowed=x64compatible
@@ -56,7 +76,18 @@ UninstallDisplayIcon={app}\{#AppExeName}
 
 Compression=lzma2/max
 SolidCompression=yes
+
+; --- Branding ---------------------------------------------------------------
+; Wizard artwork generated from assets\ by tool\make_installer_branding.ps1.
+; Several sizes of each are supplied and Inno picks the one matching the user's
+; DPI, so the logo stays sharp on high-DPI displays instead of being upscaled.
 WizardStyle=modern
+WizardImageFile={#BrandingDir}\WizardImage-*.bmp
+WizardSmallImageFile={#BrandingDir}\WizardSmallImage-*.bmp
+; The large image is a full-bleed brand panel, so let it fill rather than sit
+; letterboxed on a grey background.
+WizardImageStretch=yes
+WizardSizePercent=100
 
 ; Use Restart Manager to shut the app down if it is running during an upgrade,
 ; rather than failing with "file in use".
@@ -65,6 +96,10 @@ RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+; Say what the app actually is, rather than the stock "This will install...".
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nBastak Leads finds grain, flour and milling leads and tenders, scores them, and keeps them in a local database on this PC. Nothing leaves the device.%n%nIt is recommended that you close all other applications before continuing.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

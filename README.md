@@ -100,6 +100,16 @@ The script runs `flutter build windows --release`, reads the version from
 the VC++ runtime DLLs, and compiles `windows\installer\bastak_leads.iss`.
 Pass `-SkipBuild` to repackage an existing build.
 
+The wizard is branded from the assets in `assets/`: `tool\make_installer_branding.ps1`
+composites the white knockout logo onto a brand-green gradient for the full-height
+panel on the Welcome and Finish pages, and the app icon onto white for the header
+badge on the inner pages. Both are emitted at several sizes so Inno can pick one
+matching the user's DPI. The bitmaps are generated into `build\` on every build
+rather than committed, so a brand refresh only means replacing the PNGs.
+
+Note that `WizardStyle=modern` **disables the Welcome page by default**, which is
+the only page showing the large panel — `DisableWelcomePage=no` turns it back on.
+
 The installer lets the user pick **"just me"** (installs to
 `%LOCALAPPDATA%\Programs\Bastak Leads`, no admin needed) or **"all users"**
 (`Program Files`, prompts for admin), creates Start Menu and optional desktop
@@ -108,9 +118,15 @@ replace the previous version in place — the `AppId` GUID in the `.iss` must
 never change, or upgrades would install alongside the old copy instead.
 
 Uninstalling **keeps your leads by default**; it asks whether to also delete
-`%APPDATA%\com.bastak\bastak_leads`, defaulting to No. Note that credentials
-saved through `flutter_secure_storage` live in Windows Credential Manager, not
-in that folder, and are not touched.
+`%APPDATA%\com.bastak\Bastak Leads`, defaulting to No. That folder holds the
+SQLite database, the `flutter_secure_storage` blob and the image cache, so
+saying Yes clears the saved PIN along with the leads.
+
+That path is `CompanyName\ProductName` from `windows\runner\Runner.rc`, which is
+what `path_provider` uses. The build script reads it from there and passes it to
+the installer rather than the `.iss` hardcoding it — when `ProductName` changed
+from `bastak_leads` to `Bastak Leads`, a hardcoded copy silently went stale and
+left the uninstaller pointing at a folder that no longer existed.
 
 Silent install/uninstall, for pushing it out to several machines:
 

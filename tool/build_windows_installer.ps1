@@ -53,6 +53,17 @@ foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
     }
 }
 
+# --- where the app keeps its data -------------------------------------------
+# path_provider's getApplicationSupportDirectory() builds this from the exe's
+# CompanyName and ProductName, so read them straight out of Runner.rc instead of
+# duplicating the value in the .iss where it can drift when the product is renamed.
+$rc = Get-Content (Join-Path $repo 'windows\runner\Runner.rc') -Raw
+$company = [regex]::Match($rc, 'VALUE\s+"CompanyName",\s*"([^"]+)"').Groups[1].Value
+$product = [regex]::Match($rc, 'VALUE\s+"ProductName",\s*"([^"]+)"').Groups[1].Value
+if (-not $company -or -not $product) { throw "Could not read CompanyName/ProductName from Runner.rc" }
+$appDataDir = "$company\$product"
+Write-Host "App data dir: %APPDATA%\$appDataDir" -ForegroundColor Cyan
+
 # --- locate Inno Setup -------------------------------------------------------
 $iscc = @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
@@ -70,9 +81,20 @@ $outputDir = Join-Path $repo 'build\windows\installer'
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 $iss = Join-Path $repo 'windows\installer\bastak_leads.iss'
 
+# Wizard artwork is derived from assets\, so regenerate it on every build to
+# pick up any brand change rather than shipping a stale bitmap.
+$brandingDir = Join-Path $repo 'build\windows\branding'
+# Dot-calling a .ps1 does not set $LASTEXITCODE (that is for native exes), and
+# the generator throws on failure, so check that it actually produced artwork.
+& (Join-Path $PSScriptRoot 'make_installer_branding.ps1') -OutputDir $brandingDir
+if (-not (Test-Path (Join-Path $brandingDir 'WizardImage-164x314.bmp'))) {
+    throw "branding generation produced no wizard artwork in $brandingDir"
+}
+
 Write-Host 'Compiling installer...' -ForegroundColor Cyan
 & $iscc "/DAppVersion=$appVersion" "/DVersionInfo=$versionInfo" `
-        "/DBuildDir=$releaseDir" "/DOutputDir=$outputDir" $iss
+        "/DBuildDir=$releaseDir" "/DOutputDir=$outputDir" `
+        "/DBrandingDir=$brandingDir" "/DAppDataDir=$appDataDir" $iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
 $setup = Get-Item (Join-Path $outputDir "bastak_leads-$appVersion-windows-x64-setup.exe")
