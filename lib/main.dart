@@ -56,10 +56,10 @@ void main(List<String> args) async {
 
 /// Initialises Firebase without letting a failure take down the app. This is a
 /// local-first radar: it must keep working fully offline, and on platforms
-/// where the firebase_core plugin isn't available (e.g. Windows desktop) or
+/// where the firebase_core plugin isn't available (e.g. Linux desktop) or
 /// when there's no network, initialization simply no-ops instead of throwing.
 Future<bool> _initFirebase() async {
-  if (Platform.isWindows || Platform.isLinux) return false; // no desktop plugin
+  if (Platform.isLinux) return false; // no Linux implementation
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
