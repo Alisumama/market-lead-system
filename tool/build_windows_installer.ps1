@@ -13,14 +13,71 @@
     Package the existing build\windows\x64\runner\Release folder without
     re-running the Flutter build.
 
+.PARAMETER SignThumbprint
+    SHA-1 thumbprint of an Authenticode certificate in the current user's
+    certificate store to sign the exe and installer with. Defaults to the
+    BASTAK_SIGN_THUMBPRINT environment variable.
+
+.PARAMETER SignPfx
+    Path to a .pfx code-signing certificate (alternative to -SignThumbprint).
+    Defaults to BASTAK_SIGN_PFX; password from BASTAK_SIGN_PFX_PASSWORD.
+
+.PARAMETER TimestampUrl
+    RFC-3161 timestamp server, so signatures stay valid after the cert expires.
+
+    Signing is optional but strongly recommended: without it Windows SmartScreen
+    warns on every install/update. When no cert is supplied the build still runs,
+    unsigned, with a warning.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tool\build_windows_installer.ps1
 #>
 [CmdletBinding()]
-param([switch]$SkipBuild)
+param(
+    [switch]$SkipBuild,
+    [string]$SignThumbprint = $env:BASTAK_SIGN_THUMBPRINT,
+    [string]$SignPfx = $env:BASTAK_SIGN_PFX,
+    [string]$SignPfxPassword = $env:BASTAK_SIGN_PFX_PASSWORD,
+    [string]$TimestampUrl = 'http://timestamp.digicert.com'
+)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+
+# --- code signing helper -----------------------------------------------------
+$script:signtool = $null
+function Get-SignTool {
+    if ($script:signtool) { return $script:signtool }
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $script:signtool = $cmd.Source; return $script:signtool }
+    # Fall back to the newest signtool shipped with the Windows 10/11 SDK.
+    $found = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+        -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\' } |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if ($found) { $script:signtool = $found.FullName }
+    return $script:signtool
+}
+
+function Invoke-Sign([string]$file) {
+    if (-not $SignThumbprint -and -not $SignPfx) {
+        Write-Warning "No code-signing cert configured -- '$([IO.Path]::GetFileName($file))' will be UNSIGNED (SmartScreen will warn users). Set BASTAK_SIGN_THUMBPRINT or BASTAK_SIGN_PFX."
+        return
+    }
+    $tool = Get-SignTool
+    if (-not $tool) { throw "signtool.exe not found. Install the Windows SDK, or add signtool to PATH." }
+    $signArgs = @('sign', '/fd', 'SHA256', '/tr', $TimestampUrl, '/td', 'SHA256')
+    if ($SignThumbprint) {
+        $signArgs += @('/sha1', $SignThumbprint)
+    } else {
+        $signArgs += @('/f', $SignPfx)
+        if ($SignPfxPassword) { $signArgs += @('/p', $SignPfxPassword) }
+    }
+    $signArgs += $file
+    & $tool @signArgs
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed on $file ($LASTEXITCODE)" }
+    Write-Host "Signed $([IO.Path]::GetFileName($file))" -ForegroundColor Green
+}
 
 # --- version from pubspec.yaml (e.g. "version: 2.1.1+2") ---------------------
 $versionLine = Select-String -Path (Join-Path $repo 'pubspec.yaml') `
@@ -52,6 +109,10 @@ foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
         throw "$dll missing from the release bundle; the installer would produce an app that does not start on a clean Windows machine."
     }
 }
+
+# Sign the app exe before it is packaged, so the installed program is trusted
+# too (not just setup.exe).
+Invoke-Sign (Join-Path $releaseDir 'bastak_leads.exe')
 
 # --- where the app keeps its data -------------------------------------------
 # path_provider's getApplicationSupportDirectory() builds this from the exe's
@@ -98,6 +159,23 @@ Write-Host 'Compiling installer...' -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
 $setup = Get-Item (Join-Path $outputDir "bastak_leads-$appVersion-windows-x64-setup.exe")
+
+# Sign the finished installer, then hash it for the update manifest.
+Invoke-Sign $setup.FullName
+$sha = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLower()
+
+$assetUrl = "https://github.com/Alisumama/market-lead-system/releases/download/v$appVersion/$($setup.Name)"
+
 Write-Host ''
 Write-Host ("Installer: {0}" -f $setup.FullName) -ForegroundColor Green
 Write-Host ("Size:      {0:N1} MB" -f ($setup.Length / 1MB)) -ForegroundColor Green
+Write-Host ("SHA-256:   {0}" -f $sha) -ForegroundColor Green
+Write-Host ''
+Write-Host 'Next: create GitHub release tag ' -NoNewline
+Write-Host "v$appVersion" -ForegroundColor Yellow -NoNewline
+Write-Host ", upload the installer, then set Firestore config/appVersion to:"
+Write-Host "  version:   $appVersion"
+Write-Host "  url:       $assetUrl"
+Write-Host "  sha256:    $sha"
+Write-Host "  mandatory: false"
+Write-Host '(see RELEASING.md)'

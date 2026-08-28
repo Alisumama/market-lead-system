@@ -1,0 +1,175 @@
+name: Release Windows
+
+# Cut a release by pushing a version tag that matches pubspec.yaml, e.g.:
+#   git tag v2.1.5 && git push origin v2.1.5
+# The tag's (annotated) message becomes the release notes AND the update notes.
+#
+# This job builds + (optionally) signs the Windows installer, publishes it as a
+# GitHub Release asset, and points the Firestore update manifest at it so every
+# running client offers the update. See RELEASING.md for the required secrets.
+#
+# It can also be run manually from the Actions tab (workflow_dispatch) — handy
+# for testing or re-releasing. A manual run derives the tag from pubspec.yaml
+# (v<version>) and creates it at the selected branch's HEAD.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "What's-new notes (shown in the release & the in-app prompt)"
+        required: false
+        type: string
+      mandatory:
+        description: 'Force the update (users cannot dismiss the prompt)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # create the release + upload the asset
+  id-token: write   # google-github-actions/auth
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      # Gate the optional steps on whether their secret is configured.
+      HAS_SIGN_CERT: ${{ secrets.BASTAK_SIGN_PFX_BASE64 != '' }}
+      HAS_FIREBASE: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need tags for the tag message
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.4
+          channel: stable
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Resolve version, tag & notes
+        id: ver
+        shell: pwsh
+        env:
+          # Passed via env (not inlined) to avoid script injection from inputs.
+          INPUT_NOTES: ${{ inputs.notes }}
+        run: |
+          $m = Select-String -Path pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+(\d+)' | Select-Object -First 1
+          if (-not $m) { throw "Cannot parse 'version:' from pubspec.yaml" }
+          $version = $m.Matches[0].Groups[1].Value
+
+          if ("${{ github.event_name }}" -eq 'push') {
+            # Tag push: the tag is authoritative and must match pubspec.
+            $tag = "${{ github.ref_name }}"
+            if ($tag -ne "v$version") {
+              throw "Tag '$tag' does not match pubspec version 'v$version'. Bump pubspec.yaml or retag."
+            }
+            $notes = (git for-each-ref "refs/tags/$tag" --format='%(contents)')
+          } else {
+            # Manual run: derive the tag from pubspec; notes come from the input.
+            $tag = "v$version"
+            $notes = $env:INPUT_NOTES
+          }
+          if ([string]::IsNullOrWhiteSpace($notes)) { $notes = "Update to v$version." }
+
+          $asset = "bastak_leads-$version-windows-x64-setup.exe"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag"         >> $env:GITHUB_OUTPUT
+          "asset=$asset"     >> $env:GITHUB_OUTPUT
+          "notes<<NOTES_EOF" >> $env:GITHUB_OUTPUT
+          $notes             >> $env:GITHUB_OUTPUT
+          "NOTES_EOF"        >> $env:GITHUB_OUTPUT
+
+      - name: Prepare signing certificate
+        if: ${{ env.HAS_SIGN_CERT == 'true' }}
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.BASTAK_SIGN_PFX_BASE64 }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          "BASTAK_SIGN_PFX=$pfx" >> $env:GITHUB_ENV
+
+      - name: Build & sign installer
+        shell: pwsh
+        env:
+          # Present only when the signing cert secret is set; the build script
+          # skips signing (with a warning) when both are empty.
+          BASTAK_SIGN_PFX_PASSWORD: ${{ secrets.BASTAK_SIGN_PFX_PASSWORD }}
+        run: powershell -ExecutionPolicy Bypass -File tool\build_windows_installer.ps1
+
+      - name: Hash installer
+        id: hash
+        shell: pwsh
+        run: |
+          $path = "build\windows\installer\${{ steps.ver.outputs.asset }}"
+          if (-not (Test-Path $path)) { throw "Installer not found: $path" }
+          $sha = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLower()
+          "sha256=$sha" >> $env:GITHUB_OUTPUT
+          "path=$path"  >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          # On a manual run the tag may not exist yet — create it at this commit.
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: ${{ steps.hash.outputs.path }}
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        if: ${{ env.HAS_FIREBASE == 'true' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/datastore
+
+      - name: Publish update manifest to Firestore
+        if: ${{ env.HAS_FIREBASE == 'true' }}
+        shell: pwsh
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA256: ${{ steps.hash.outputs.sha256 }}
+          NOTES: ${{ steps.ver.outputs.notes }}
+          # Empty on a tag push (-> false); 'true'/'false' on a manual run.
+          MANDATORY: ${{ inputs.mandatory }}
+        run: |
+          $assetUrl = "https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/${{ steps.ver.outputs.asset }}"
+          $mandatory = ($env:MANDATORY -eq 'true')
+          $body = @{ fields = @{
+            version   = @{ stringValue  = $env:VERSION }
+            url       = @{ stringValue  = $assetUrl }
+            sha256    = @{ stringValue  = $env:SHA256 }
+            mandatory = @{ booleanValue = $mandatory }
+            notes     = @{ stringValue  = $env:NOTES }
+          }} | ConvertTo-Json -Depth 6
+          $mask = 'updateMask.fieldPaths=version&updateMask.fieldPaths=url' +
+                  '&updateMask.fieldPaths=sha256&updateMask.fieldPaths=mandatory' +
+                  '&updateMask.fieldPaths=notes'
+          $uri = "https://firestore.googleapis.com/v1/projects/baskat-leads/databases/(default)/documents/config/appVersion?$mask"
+          Invoke-RestMethod -Method Patch -Uri $uri `
+            -Headers @{ Authorization = "Bearer $env:TOKEN" } `
+            -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "Published manifest -> v$env:VERSION ($assetUrl)"
+
+      - name: Manifest not published (no Firebase secret)
+        if: ${{ env.HAS_FIREBASE != 'true' }}
+        shell: pwsh
+        run: |
+          Write-Warning "FIREBASE_SERVICE_ACCOUNT secret not set: the GitHub release was created but the Firestore update manifest was NOT updated. Update config/appVersion manually (see RELEASING.md), or add the secret."

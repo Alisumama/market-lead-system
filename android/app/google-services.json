@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "649826315759",
+    "project_id": "baskat-leads",
+    "storage_bucket": "baskat-leads.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:649826315759:android:26be105c4ffa4fa87e9a1a",
+        "android_client_info": {
+          "package_name": "com.bastak.bastak_leads"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCqXaEx4Ctvs84lkNXabJ-nCW1XOFTp4Ag"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

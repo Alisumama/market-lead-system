@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// SECURITY NOTE
+// -------------
+// This app has no Firebase Authentication — the desktop client talks to
+// Firestore without a signed-in identity. These rules therefore allow
+// unrestricted read/write to the `Users` collection so the admin screen can
+// manage users. That means anyone who obtains the project config can read and
+// write this collection.
+//
+// PIN codes are stored only as salted SHA-256 hashes (never in the clear), but
+// names, emails and phone numbers ARE readable here. Before this holds anything
+// you wouldn't want public, lock it down: add Firebase Auth and gate writes on
+// an admin custom claim, e.g. `allow write: if request.auth.token.admin == true;`.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /Users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Feed registry. Every role reads it on app open; only admins add/edit/
+    // delete — but with no Firebase Auth that "admin only" rule is enforced in
+    // the app (AppState._requireAdmin + gated UI), not here. Deploy real Auth
+    // to move the check server-side:
+    //   allow write: if request.auth.token.admin == true;
+    match /Sources/{sourceId} {
+      allow read, write: if true;
+    }
+
+    // Update manifest read by the Windows app over the Firestore REST API (it
+    // has no Firebase SDK). Public read; publish new versions from the console
+    // or the macOS admin build.
+    match /config/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Everything else stays denied by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

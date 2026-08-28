@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 
+import '../util/url.dart';
 import 'app_database.dart';
 import 'models/feed_source.dart';
 import 'models/lead.dart';
@@ -296,6 +297,53 @@ class LeadRepository {
   Future<int> insertSource(FeedSource s) async {
     final db = await _db;
     return db.insert('sources', s.toMap());
+  }
+
+  /// Replaces the local `sources` mirror with [incoming] (loaded from
+  /// Firestore), preserving each source's run-health columns (last_status,
+  /// last_run_at, …) by matching on URL — those are local-only and would
+  /// otherwise be lost on every sync. The collection pipeline reads this table,
+  /// so keeping it in step is what lets offline/background collection work.
+  /// Returns the freshly-inserted rows (with their new local ids).
+  Future<List<FeedSource>> replaceSourcesMirror(
+      List<FeedSource> incoming) async {
+    final db = await _db;
+    return db.transaction((txn) async {
+      final old = await txn.query('sources');
+      // Preserve run health keyed by URL.
+      final health = <String, Map<String, Object?>>{
+        for (final r in old)
+          (r['url'] as String? ?? ''): {
+            'last_status': r['last_status'],
+            'last_error': r['last_error'],
+            'last_found': r['last_found'],
+            'last_new': r['last_new'],
+            'last_run_at': r['last_run_at'],
+          }
+      };
+      await txn.delete('sources');
+      final result = <FeedSource>[];
+      final seenUrls = <String>{};
+      for (final s in incoming) {
+        // Never mirror the same feed twice, whatever the caller passed in.
+        final key = normalizeFeedUrl(s.url);
+        if (key.isEmpty || !seenUrls.add(key)) continue;
+        final h = health[s.url];
+        final row = s.toMap()
+          ..remove('id') // let sqflite assign a fresh rowid
+          ..addAll(h ?? const {});
+        final id = await txn.insert('sources', row);
+        result.add(s.copyWith(
+          id: id,
+          lastStatus: h?['last_status'] as String?,
+          lastError: h?['last_error'] as String?,
+          lastRunAt: h?['last_run_at'] as String?,
+          lastFound: (h?['last_found'] as int?) ?? 0,
+          lastNew: (h?['last_new'] as int?) ?? 0,
+        ));
+      }
+      return result;
+    });
   }
 
   Future<void> updateSource(FeedSource s) async {

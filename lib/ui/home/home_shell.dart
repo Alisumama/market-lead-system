@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../services/update_service.dart';
 import '../../state/app_state.dart';
 import '../reports/reports_page.dart';
 import '../rules/rules_page.dart';
 import '../settings/settings_page.dart';
 import '../sources/sources_page.dart';
+import '../updates/update_dialog.dart';
+import '../users/users_page.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/refresh_status_chip.dart';
 import 'leads_page.dart';
@@ -22,12 +25,14 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  bool _updatePrompted = false;
 
   static const _destinations = [
     (icon: Icons.dashboard_outlined, sel: Icons.dashboard, label: 'Leads'),
     (icon: Icons.rss_feed_outlined, sel: Icons.rss_feed, label: 'Sources'),
     (icon: Icons.tune_outlined, sel: Icons.tune, label: 'Rules'),
     (icon: Icons.bar_chart_outlined, sel: Icons.bar_chart, label: 'Reports'),
+    (icon: Icons.group_outlined, sel: Icons.group, label: 'Users'),
     (icon: Icons.settings_outlined, sel: Icons.settings, label: 'Settings'),
   ];
 
@@ -58,11 +63,22 @@ class _HomeShellState extends State<HomeShell> {
       });
     }
 
+    // Surface a found update once per session (Windows). Mandatory ones can't
+    // be dismissed by the dialog itself.
+    final update = context.select<AppState, UpdateInfo?>((s) => s.availableUpdate);
+    if (update != null && !_updatePrompted) {
+      _updatePrompted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) showUpdateDialog(context, update);
+      });
+    }
+
     final pages = const [
       LeadsPage(),
       SourcesPage(),
       RulesPage(),
       ReportsPage(),
+      UsersPage(),
       SettingsPage()
     ];
     final wide = MediaQuery.sizeOf(context).width >= 800;

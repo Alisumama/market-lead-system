@@ -1,10 +1,18 @@
 import 'lead.dart';
 
 /// A configurable feed the pipeline pulls from. Ported from the original
-/// sources.yaml registry, but now fully user-editable at runtime and stored
-/// in the local DB so the user has complete control over what is collected.
+/// sources.yaml registry. The registry now lives in the Firestore `Sources`
+/// collection (authored by admins, readable by everyone), and is mirrored into
+/// the local DB on load so the offline/background pipeline keeps working.
+///
+/// Two identities coexist for that reason:
+///   * [docId]  — the Firestore document id. Present on cloud-loaded sources;
+///                the stable key used for edits/deletes.
+///   * [id]     — the local sqflite rowid of the mirror row. Used only by the
+///                collection pipeline, which still reads the local table.
 class FeedSource {
   final int? id;
+  final String? docId;
   final String name;
   final String url;
   final SourceKind kind; // rss / googleAlert / worldBank
@@ -20,6 +28,7 @@ class FeedSource {
 
   const FeedSource({
     this.id,
+    this.docId,
     required this.name,
     required this.url,
     this.kind = SourceKind.rss,
@@ -38,6 +47,7 @@ class FeedSource {
 
   FeedSource copyWith({
     int? id,
+    String? docId,
     String? name,
     String? url,
     SourceKind? kind,
@@ -53,6 +63,7 @@ class FeedSource {
   }) {
     return FeedSource(
       id: id ?? this.id,
+      docId: docId ?? this.docId,
       name: name ?? this.name,
       url: url ?? this.url,
       kind: kind ?? this.kind,
@@ -70,6 +81,7 @@ class FeedSource {
 
   Map<String, Object?> toMap() => {
         if (id != null) 'id': id,
+        'doc_id': docId,
         'name': name,
         'url': url,
         'kind': kind.storageValue,
@@ -86,6 +98,7 @@ class FeedSource {
 
   factory FeedSource.fromMap(Map<String, Object?> m) => FeedSource(
         id: m['id'] as int?,
+        docId: m['doc_id'] as String?,
         name: m['name'] as String? ?? '',
         url: m['url'] as String? ?? '',
         kind: SourceKindX.fromStorage(m['kind'] as String?),
@@ -99,4 +112,37 @@ class FeedSource {
         lastNew: (m['last_new'] as int?) ?? 0,
         lastRunAt: m['last_run_at'] as String?,
       );
+
+  /// The document body written to the Firestore `Sources` collection. Only the
+  /// authored configuration is stored here — run health (last_status etc.) is a
+  /// local, per-device concern and stays in the sqflite mirror. Booleans stay
+  /// native (not 0/1) since Firestore has a real bool type.
+  Map<String, Object?> toFirestore() => {
+        'name': name,
+        'url': url,
+        'kind': kind.storageValue,
+        'language': language,
+        'country': country,
+        'enabled': enabled,
+        'builtIn': builtIn,
+      };
+
+  factory FeedSource.fromFirestore(String docId, Map<String, Object?> m) =>
+      FeedSource(
+        docId: docId,
+        name: m['name'] as String? ?? '',
+        url: m['url'] as String? ?? '',
+        kind: SourceKindX.fromStorage(m['kind'] as String?),
+        language: m['language'] as String? ?? 'en',
+        country: m['country'] as String? ?? 'global',
+        // Tolerate both the Firestore bool and a legacy 0/1 int.
+        enabled: _asBool(m['enabled'], fallback: true),
+        builtIn: _asBool(m['builtIn'], fallback: false),
+      );
+
+  static bool _asBool(Object? v, {required bool fallback}) {
+    if (v is bool) return v;
+    if (v is int) return v == 1;
+    return fallback;
+  }
 }

@@ -4,9 +4,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:workmanager/workmanager.dart';
 
+import 'firebase_options.dart';
 import 'data/lead_repository.dart';
+import 'data/models/app_user.dart';
+import 'data/user_repository.dart';
 import 'services/auth_service.dart';
 import 'services/background_service.dart';
 import 'services/headless_refresh.dart';
@@ -15,11 +19,14 @@ import 'services/settings_service.dart';
 import 'state/app_state.dart';
 import 'theme/app_theme.dart';
 import 'ui/auth/lock_screen.dart';
+import 'ui/auth/login_screen.dart';
 import 'ui/home/home_shell.dart';
 import 'ui/splash_screen.dart';
 
-void main(List<String> args) {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final firebaseReady = await _initFirebase();
 
   // Headless mode: the OS scheduler launches us with --headless to collect in
   // the background, then we exit. No window, no auth.
@@ -43,7 +50,25 @@ void main(List<String> args) {
     repo: repo,
     auth: auth,
     notifications: notifications,
+    firebaseReady: firebaseReady,
   ));
+}
+
+/// Initialises Firebase without letting a failure take down the app. This is a
+/// local-first radar: it must keep working fully offline, and on platforms
+/// where the firebase_core plugin isn't available (e.g. Windows desktop) or
+/// when there's no network, initialization simply no-ops instead of throwing.
+Future<bool> _initFirebase() async {
+  if (Platform.isWindows || Platform.isLinux) return false; // no desktop plugin
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    return true;
+  } catch (e) {
+    debugPrint('Firebase init skipped: $e');
+    return false;
+  }
 }
 
 class BastakLeadsApp extends StatelessWidget {
@@ -51,6 +76,7 @@ class BastakLeadsApp extends StatelessWidget {
   final LeadRepository repo;
   final AuthService auth;
   final NotificationService notifications;
+  final bool firebaseReady;
 
   const BastakLeadsApp({
     super.key,
@@ -58,13 +84,18 @@ class BastakLeadsApp extends StatelessWidget {
     required this.repo,
     required this.auth,
     required this.notifications,
+    required this.firebaseReady,
   });
 
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) =>
-          AppState(repo: repo, settings: settings, notifications: notifications),
+      create: (_) => AppState(
+        repo: repo,
+        settings: settings,
+        notifications: notifications,
+        firebaseReady: firebaseReady,
+      ),
       child: Consumer<AppState>(
         builder: (context, state, _) {
           return MaterialApp(
@@ -73,7 +104,7 @@ class BastakLeadsApp extends StatelessWidget {
             theme: AppTheme.light(),
             darkTheme: AppTheme.dark(),
             themeMode: state.themeMode,
-            home: AuthGate(auth: auth),
+            home: AuthGate(auth: auth, firebaseReady: firebaseReady),
           );
         },
       ),
@@ -107,7 +138,8 @@ class _HeadlessRunnerState extends State<_HeadlessRunner> {
 /// the user is authenticated.
 class AuthGate extends StatefulWidget {
   final AuthService auth;
-  const AuthGate({super.key, required this.auth});
+  final bool firebaseReady;
+  const AuthGate({super.key, required this.auth, required this.firebaseReady});
 
   @override
   State<AuthGate> createState() => _AuthGateState();
@@ -139,9 +171,29 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     _resetIdleTimer();
   }
 
+  /// Called when the login screen authenticates a Firestore user.
+  void _onLoggedIn(AppUser user) {
+    context.read<AppState>().setCurrentUser(user);
+    _onUnlocked();
+  }
+
+  /// The non-Firebase fallback (Windows/Linux, or offline) keeps the old local
+  /// PIN lock. There's no per-user identity there, so the local operator is
+  /// treated as an admin — preserving the app's prior single-user behaviour.
+  void _onLocalUnlocked() {
+    context.read<AppState>().setCurrentUser(const AppUser(
+          name: 'This device',
+          email: '',
+          role: UserRole.admin,
+          active: true,
+        ));
+    _onUnlocked();
+  }
+
   void _lock() {
     if (!_unlocked) return;
     _idleTimer?.cancel();
+    context.read<AppState>().logout();
     setState(() => _unlocked = false);
   }
 
@@ -180,7 +232,11 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       return SplashScreen(onDone: () => setState(() => _splashDone = true));
     }
     if (!_unlocked) {
-      return LockScreen(auth: widget.auth, onUnlocked: _onUnlocked);
+      // Firebase available → per-user email + PIN login against Firestore.
+      // Otherwise fall back to the local PIN lock (single-user, treated admin).
+      return widget.firebaseReady
+          ? LoginScreen(users: UserRepository(), onLoggedIn: _onLoggedIn)
+          : LockScreen(auth: widget.auth, onUnlocked: _onLocalUnlocked);
     }
     // Any interaction resets the inactivity countdown.
     return Listener(

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/export_service.dart';
 import '../../state/app_state.dart';
+import '../updates/update_dialog.dart';
 import '../widgets/app_bar_bits.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/format_picker.dart';
@@ -139,6 +140,11 @@ class SettingsPage extends StatelessWidget {
               _section(context, 'Security'),
               _card(context, [_SecurityTile(state: state)]),
 
+              if (state.updatesSupported) ...[
+                _section(context, 'Updates'),
+                _card(context, [const _CheckForUpdatesTile()]),
+              ],
+
               _section(context, 'About'),
               _card(context, [
                 ListTile(
@@ -186,6 +192,56 @@ class SettingsPage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Card(child: Column(children: children)),
       );
+}
+
+class _CheckForUpdatesTile extends StatefulWidget {
+  const _CheckForUpdatesTile();
+
+  @override
+  State<_CheckForUpdatesTile> createState() => _CheckForUpdatesTileState();
+}
+
+class _CheckForUpdatesTileState extends State<_CheckForUpdatesTile> {
+  bool _checking = false;
+
+  Future<void> _check() async {
+    final state = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _checking = true);
+    try {
+      final info = await state.checkForUpdateNow();
+      if (!mounted) return;
+      if (info == null) {
+        messenger.showSnackBar(
+            const SnackBar(content: Text("You're on the latest version.")));
+      } else {
+        await showUpdateDialog(context, info);
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Update check failed: $e')));
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.system_update_alt_outlined),
+      title: const Text('Check for updates'),
+      subtitle: Text(_checking
+          ? 'Checking…'
+          : 'Download and install the latest version'),
+      trailing: _checking
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.chevron_right),
+      onTap: _checking ? null : _check,
+    );
+  }
 }
 
 class _SecurityTile extends StatelessWidget {

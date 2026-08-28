@@ -4,9 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'default_sources.dart';
-
-/// Opens (and, on first launch, creates + seeds) the local SQLite database.
+/// Opens (and, on first launch, creates) the local SQLite database.
 ///
 /// Cross-platform: on Windows/Linux we use the FFI factory; on macOS/Android
 /// the native sqflite factory works out of the box. There is no server and no
@@ -43,7 +41,7 @@ class AppDatabase {
   }
 
   // Bump this and add a step to [_migrations] whenever the schema changes.
-  static const _dbVersion = 4;
+  static const _dbVersion = 5;
 
   /// Ordered, additive migrations keyed by the version they upgrade *to*.
   /// Running from any older version applies each step in turn, so existing
@@ -60,6 +58,12 @@ class AppDatabase {
     4: (db) async {
       await db.execute(
           'ALTER TABLE leads ADD COLUMN seen INTEGER NOT NULL DEFAULT 0');
+    },
+    // The feed registry moved to the Firestore `Sources` collection; the local
+    // `sources` table is now just a mirror. Track each row's Firestore doc id
+    // so edits/deletes can target the cloud document.
+    5: (db) async {
+      await db.execute('ALTER TABLE sources ADD COLUMN doc_id TEXT');
     },
   };
 
@@ -109,6 +113,7 @@ class AppDatabase {
     await db.execute('''
       CREATE TABLE sources (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id      TEXT,
         name        TEXT NOT NULL,
         url         TEXT NOT NULL,
         kind        TEXT NOT NULL,
@@ -124,11 +129,8 @@ class AppDatabase {
       )
     ''');
 
-    // Seed the default source registry on first launch.
-    final batch = db.batch();
-    for (final s in kDefaultSources) {
-      batch.insert('sources', s.toMap());
-    }
-    await batch.commit(noResult: true);
+    // The `sources` table starts empty now — the registry is seeded into and
+    // loaded from the Firestore `Sources` collection (see SourceRepository),
+    // then mirrored here on each app open for the offline pipeline.
   }
 }

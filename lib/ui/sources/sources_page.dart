@@ -20,7 +20,16 @@ Future<void> _editSource(
     constraints: const BoxConstraints(maxWidth: 600),
     builder: (_) => SourceEditor(source: existing),
   );
-  if (result != null) await state.saveSource(result);
+  if (result == null || !context.mounted) return;
+  try {
+    await state.saveSource(result);
+  } catch (e) {
+    if (!context.mounted) return;
+    // e.g. the URL already belongs to another source.
+    final msg = e is StateError ? e.message : 'Could not save source: $e';
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
 }
 
 /// Manage the feed registry: enable/disable, add, edit, delete, with search
@@ -60,13 +69,16 @@ class _SourcesPageState extends State<SourcesPage> {
     final state = context.watch<AppState>();
     final all = state.sources;
     final filtered = _filter(all);
+    final isAdmin = state.isAdmin;
 
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _editSource(context, state, null),
-        icon: const Icon(Icons.add),
-        label: const Text('Add source'),
-      ),
+      floatingActionButton: isAdmin
+          ? FloatingActionButton.extended(
+              onPressed: () => _editSource(context, state, null),
+              icon: const Icon(Icons.add),
+              label: const Text('Add source'),
+            )
+          : null,
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -79,18 +91,21 @@ class _SourcesPageState extends State<SourcesPage> {
             titleSpacing: mobileBrandLeading(context) == null ? 20 : 4,
             title: const Text('Sources'),
             actions: [
-              IconButton(
-                tooltip: 'Import sources',
-                onPressed: () => _import(context, state),
-                icon: const Icon(Icons.file_upload_outlined),
-              ),
-              IconButton(
-                tooltip: 'Export sources',
-                onPressed: filtered.isEmpty
-                    ? null
-                    : () => _export(context, filtered),
-                icon: const Icon(Icons.file_download_outlined),
-              ),
+              // Import/export mutate or extract the shared registry — admin only.
+              if (isAdmin) ...[
+                IconButton(
+                  tooltip: 'Import sources',
+                  onPressed: () => _import(context, state),
+                  icon: const Icon(Icons.file_upload_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Export sources',
+                  onPressed: filtered.isEmpty
+                      ? null
+                      : () => _export(context, filtered),
+                  icon: const Icon(Icons.file_download_outlined),
+                ),
+              ],
               IconButton(
                 tooltip: 'Refresh now',
                 onPressed: state.refreshing ? null : () => state.refresh(),
@@ -288,6 +303,7 @@ class _SourceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final isAdmin = state.isAdmin;
     final status = source.lastStatus;
     final (statusColor, statusIcon) = switch (status) {
       'ok' => (AppTheme.brandGreen, Icons.check_circle),
@@ -297,7 +313,7 @@ class _SourceCard extends StatelessWidget {
 
     return Card(
       child: InkWell(
-        onTap: () => _editSource(context, state, source),
+        onTap: isAdmin ? () => _editSource(context, state, source) : null,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
           child: Row(
@@ -358,24 +374,30 @@ class _SourceCard extends StatelessWidget {
                   ],
                 ),
               ),
+              // Enable/disable and edit/delete are admin-only. Non-admins see
+              // the state but can't change it.
               Switch(
                 value: source.enabled,
-                onChanged: (v) => state.toggleSource(source, v),
+                onChanged:
+                    isAdmin ? (v) => state.toggleSource(source, v) : null,
               ),
-              PopupMenuButton<String>(
-                onSelected: (v) async {
-                  if (v == 'edit') {
-                    await _editSource(context, state, source);
-                  } else if (v == 'delete') {
-                    final ok = await _confirmDelete(context);
-                    if (ok == true) await state.deleteSource(source);
-                  }
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'edit', child: Text('Edit')),
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
-                ],
-              ),
+              if (isAdmin)
+                PopupMenuButton<String>(
+                  onSelected: (v) async {
+                    if (v == 'edit') {
+                      await _editSource(context, state, source);
+                    } else if (v == 'delete') {
+                      final ok = await _confirmDelete(context);
+                      if (ok == true) await state.deleteSource(source);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'edit', child: Text('Edit')),
+                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                )
+              else
+                const SizedBox(width: 8),
             ],
           ),
         ),

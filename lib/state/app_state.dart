@@ -2,14 +2,18 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../data/default_sources.dart';
 import '../data/lead_repository.dart';
+import '../data/models/app_user.dart';
 import '../data/models/feed_source.dart';
 import '../data/models/lead.dart';
+import '../data/source_repository.dart';
 import '../scoring/keyword_scorer.dart';
 import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/pipeline.dart';
 import '../services/settings_service.dart';
+import '../services/update_service.dart';
 
 /// How the leads list is rendered.
 enum LeadView { list, grid }
@@ -21,14 +25,41 @@ class AppState extends ChangeNotifier {
   final LeadRepository repo;
   final SettingsService settings;
   final NotificationService notifications;
+
+  /// Whether Firebase initialised on this platform. When false (Windows/Linux
+  /// desktop, or offline first-run) the app falls back to a locally-seeded
+  /// source registry so collection still works.
+  final bool firebaseReady;
   late Pipeline pipeline;
+
+  /// Cloud registry of feed sources. Only touched when [firebaseReady].
+  final SourceRepository? sourceRepo;
 
   AppState({
     required this.repo,
     required this.settings,
     required this.notifications,
-  }) {
+    this.firebaseReady = false,
+    SourceRepository? sourceRepo,
+  })  : sourceRepo = sourceRepo ?? (firebaseReady ? SourceRepository() : null) {
     pipeline = Pipeline(repo: repo);
+  }
+
+  // ---- current user (set at login) ----
+  /// The signed-in application user. Null until login completes. Drives
+  /// role-based gating — e.g. only an admin may edit the Sources registry.
+  AppUser? currentUser;
+
+  bool get isAdmin => currentUser?.role == UserRole.admin;
+
+  void setCurrentUser(AppUser user) {
+    currentUser = user;
+    notifyListeners();
+  }
+
+  void logout() {
+    currentUser = null;
+    notifyListeners();
   }
 
   // ---- observable state ----
@@ -64,6 +95,38 @@ class AppState extends ChangeNotifier {
   late final BackgroundService background = BackgroundService(settings);
   bool get backgroundSupported => background.supported;
 
+  // ---- self-update (Windows installer build) ----
+  final UpdateService updater = UpdateService();
+
+  /// A newer release found by the last check, or null. Drives the update prompt.
+  UpdateInfo? availableUpdate;
+  bool get updatesSupported => updater.supported;
+
+  /// Background check run at launch. Silent: any failure (offline, no manifest)
+  /// is swallowed so it never disrupts startup.
+  Future<void> _checkForUpdateSilently() async {
+    if (!updater.supported) return;
+    try {
+      final info = await updater.checkForUpdate();
+      if (info != null) {
+        availableUpdate = info;
+        notifyListeners();
+      }
+    } catch (_) {
+      // Ignore — the user can still check manually from Settings.
+    }
+  }
+
+  /// Manual "Check for updates" from Settings. Returns the newer release (also
+  /// stored in [availableUpdate]) or null when already up to date. Rethrows so
+  /// the UI can show a failure.
+  Future<UpdateInfo?> checkForUpdateNow() async {
+    final info = await updater.checkForUpdate();
+    availableUpdate = info;
+    if (info != null) notifyListeners();
+    return info;
+  }
+
   Timer? _timer;
 
   Future<void> init() async {
@@ -87,6 +150,11 @@ class AppState extends ChangeNotifier {
     query = query.copyWith(freshDays: freshDays);
     pipeline.scorer = KeywordScorer(await settings.scoringConfig());
 
+    // Pull the source registry from Firestore into the local mirror so the
+    // pipeline (and every role's Sources view) sees the shared, admin-authored
+    // list. Best-effort — a failure here must not block the app.
+    await _bootstrapSources();
+
     // Show what's already stored immediately… (never let a load error leave
     // the UI stuck on a spinner).
     try {
@@ -100,6 +168,9 @@ class AppState extends ChangeNotifier {
     // …and revalidate from the network in parallel (stale-while-revalidate).
     // The corner status chip reflects progress; data updates in place when done.
     unawaited(refresh());
+
+    // Look for a newer installer in the background (Windows only, best-effort).
+    unawaited(_checkForUpdateSilently());
 
     _scheduleHourly();
   }
@@ -317,61 +388,135 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---- sources CRUD ----
+  // ---- sources CRUD (Firestore-backed, mirrored locally) ----
+
+  /// Seeds the cloud registry on a fresh project, then loads it into the local
+  /// mirror. Falls back to a locally-seeded default registry when Firebase is
+  /// unavailable (e.g. Windows/Linux, or offline) so collection still works.
+  Future<void> _bootstrapSources() async {
+    final cloud = sourceRepo;
+    if (cloud == null) {
+      // No Firestore on this platform — keep the app working with defaults.
+      if ((await repo.allSources()).isEmpty) {
+        await repo.replaceSourcesMirror(
+            kDefaultSources.map((s) => s.copyWith(builtIn: true)).toList());
+      }
+      return;
+    }
+    try {
+      await cloud.seedDefaultsIfEmpty();
+      // Clean up any duplicate-URL docs left by earlier builds before mirroring.
+      await cloud.dedupeByUrl();
+      await syncSources();
+    } catch (e) {
+      // Rules not deployed / offline: fall back to whatever's already mirrored,
+      // or the shipped defaults if the mirror is empty.
+      lastError = 'Sources sync failed: $e';
+      if ((await repo.allSources()).isEmpty) {
+        await repo.replaceSourcesMirror(
+            kDefaultSources.map((s) => s.copyWith(builtIn: true)).toList());
+      }
+    }
+  }
+
+  /// Reloads the registry from Firestore into the local mirror. All roles call
+  /// this (read-only for non-admins).
+  Future<void> syncSources() async {
+    final cloud = sourceRepo;
+    if (cloud == null) return;
+    final fromCloud = await cloud.all();
+    // Defensive de-dup by normalized URL so the local mirror (and the pipeline,
+    // which would otherwise double-fetch) never sees the same feed twice, even
+    // if a stray duplicate slipped into Firestore. Prefer keeping an enabled one.
+    final byUrl = <String, FeedSource>{};
+    for (final s in fromCloud) {
+      final key = _normUrl(s.url);
+      if (key.isEmpty) continue;
+      final kept = byUrl[key];
+      if (kept == null || (s.enabled && !kept.enabled)) byUrl[key] = s;
+    }
+    sources = await repo.replaceSourcesMirror(byUrl.values.toList());
+    notifyListeners();
+  }
+
+  /// Reloads the source list from the local mirror (used after a pipeline run,
+  /// which writes fresh run-health there).
   Future<void> reloadSources() async {
     sources = await repo.allSources();
     notifyListeners();
   }
 
-  Future<void> saveSource(FeedSource s) async {
-    if (s.id == null) {
-      await repo.insertSource(s);
-    } else {
-      await repo.updateSource(s);
+  /// Guard: mutating the registry is admin-only. Throws for anyone else so a
+  /// stray call can't slip past the (already-gated) UI.
+  void _requireAdmin() {
+    if (!isAdmin) {
+      throw StateError('Only an admin can modify the sources registry');
     }
-    await reloadSources();
+  }
+
+  Future<void> saveSource(FeedSource s) async {
+    _requireAdmin();
+    final cloud = sourceRepo;
+    if (cloud == null) {
+      throw StateError('Sources are managed in Firestore, which is '
+          'unavailable on this device');
+    }
+    // Reject a URL that already belongs to a different source, so no two
+    // documents ever share a feed. add() upserts, so new adds are safe already;
+    // this guards the edit case (changing a URL onto another source's).
+    final clash = await cloud.docIdForUrl(s.url, exceptDocId: s.docId);
+    if (clash != null) {
+      throw StateError('Another source already uses that URL');
+    }
+    if (s.docId == null) {
+      await cloud.add(s);
+    } else {
+      await cloud.update(s);
+    }
+    await syncSources();
   }
 
   Future<void> toggleSource(FeedSource s, bool enabled) =>
       saveSource(s.copyWith(enabled: enabled));
 
   Future<void> deleteSource(FeedSource s) async {
-    if (s.id != null) await repo.deleteSource(s.id!);
-    await reloadSources();
+    _requireAdmin();
+    final cloud = sourceRepo;
+    if (cloud == null || s.docId == null) return;
+    await cloud.delete(s.docId!);
+    await syncSources();
   }
 
   /// Imports shared sources, skipping any that match an existing source.
   /// Matching is by a normalized URL (ignores scheme, host casing and a
   /// trailing slash) so http/https and "/feed" vs "/feed/" count as the same.
-  /// Returns the number actually added.
+  /// Returns the number actually added. Admin-only.
   Future<int> importSources(List<FeedSource> incoming) async {
-    final existing =
-        (await repo.allSources()).map((s) => _normUrl(s.url)).toSet();
+    _requireAdmin();
+    final cloud = sourceRepo;
+    if (cloud == null) {
+      throw StateError('Sources are managed in Firestore, which is '
+          'unavailable on this device');
+    }
+    final existing = sources.map((s) => _normUrl(s.url)).toSet();
     var added = 0;
     for (final s in incoming) {
       final key = _normUrl(s.url);
       if (key.isEmpty || existing.contains(key)) continue;
-      await repo.insertSource(s.copyWith(builtIn: false));
+      await cloud.add(s.copyWith(builtIn: false));
       existing.add(key);
       added++;
     }
-    await reloadSources();
+    await syncSources();
     // Newly imported feeds may bring new leads — fetch + rescore in the
     // background so the Leads list updates (the corner chip shows progress).
     if (added > 0) unawaited(refresh());
     return added;
   }
 
-  static String _normUrl(String raw) {
-    final t = raw.trim();
-    if (t.isEmpty) return '';
-    final uri = Uri.tryParse(t);
-    if (uri == null || uri.host.isEmpty) return t.toLowerCase();
-    var path = uri.path;
-    if (path.endsWith('/')) path = path.substring(0, path.length - 1);
-    final q = uri.query;
-    return '${uri.host.toLowerCase()}$path${q.isEmpty ? '' : '?$q'}';
-  }
+  // Single source of truth for URL comparison, shared with SourceRepository so
+  // import de-dup and cloud de-dup can't drift apart.
+  static String _normUrl(String raw) => SourceRepository.normalizeUrl(raw);
 
   // ---- settings ----
   Future<void> setAutoRefreshHourly(bool v) async {
@@ -492,6 +637,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _timer?.cancel();
+    updater.dispose();
     super.dispose();
   }
 }

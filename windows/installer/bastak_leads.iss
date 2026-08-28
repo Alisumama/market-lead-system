@@ -48,10 +48,13 @@ VersionInfoProductName={#AppName}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup
 
-; Let the user choose "just me" (no admin) or "all users" (admin prompt).
-; {autopf} then resolves to %LOCALAPPDATA%\Programs or Program Files to match.
+; Default to a per-user install (no admin): {autopf} then resolves to
+; %LOCALAPPDATA%\Programs. This is what makes silent auto-updates seamless — a
+; per-user install upgrades without a UAC prompt. The user can still elevate to
+; an all-users install via the dialog; such installs will prompt for elevation
+; on update. `commandline` lets the updater pass the same scope on silent runs.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog commandline
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -90,9 +93,12 @@ WizardImageStretch=yes
 WizardSizePercent=100
 
 ; Use Restart Manager to shut the app down if it is running during an upgrade,
-; rather than failing with "file in use".
+; rather than failing with "file in use". RestartApplications is off because the
+; silent auto-update runs with /NORESTART (which disables RM's app restart) and
+; relaunches explicitly via the WizardSilent [Run] entry below — keeping the
+; relaunch deterministic and avoiding a double launch.
 CloseApplications=yes
-RestartApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -115,7 +121,11 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
+; Interactive install: offer a "Launch" checkbox on the finished page.
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Silent install (the auto-updater path): relaunch the app so a background
+; update reopens it. Only fires under /SILENT or /VERYSILENT.
+Filename: "{app}\{#AppExeName}"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [Code]
 { On uninstall, offer to remove the local SQLite database and settings. This is
