@@ -32,6 +32,13 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# Newer MSVC toolsets (VS 2022 17.14+ / VS 18, as on GitHub-hosted runners) turn
+# <experimental/coroutine> into a hard error (STL1011). Some plugins still
+# include it (e.g. local_auth_windows), which breaks the build on those
+# toolsets. Silencing it project-wide keeps the build working across MSVC
+# versions. Set before the plugin subdirectories below so it applies to them.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by

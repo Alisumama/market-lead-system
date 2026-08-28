@@ -92,6 +92,10 @@ Write-Host "Version $appVersion (build $buildNumber)" -ForegroundColor Cyan
 $releaseDir = Join-Path $repo 'build\windows\x64\runner\Release'
 if (-not $SkipBuild) {
     Write-Host 'Building Flutter Windows release...' -ForegroundColor Cyan
+    # Belt-and-suspenders for the same STL1011 <experimental/coroutine> error the
+    # windows/CMakeLists.txt define guards against: cl.exe also honours the CL
+    # env var, so newer MSVC toolsets build cleanly however the plugins compile.
+    $env:CL = (("$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS").Trim())
     Push-Location $repo
     try {
         & flutter build windows --release
