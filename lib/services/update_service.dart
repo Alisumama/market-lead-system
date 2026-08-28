@@ -23,6 +23,35 @@ class UpdateInfo {
   });
 }
 
+/// Why an update check found nothing. A manifest that hasn't been published is
+/// reported separately from genuinely being up to date: the two used to be
+/// indistinguishable (both a null [UpdateInfo]), so a missing `config/appVersion`
+/// document looked exactly like a working "no update available" result.
+enum UpdateStatus {
+  /// A newer release is available; [UpdateCheck.info] carries it.
+  available,
+
+  /// The manifest was read and the running build is current.
+  upToDate,
+
+  /// No usable manifest exists yet — the document is missing, or lacks the
+  /// version/url fields. A configuration problem, not a verdict on the build.
+  noManifest,
+
+  /// Self-update doesn't apply on this platform.
+  unsupported,
+}
+
+/// The outcome of an update check.
+class UpdateCheck {
+  final UpdateStatus status;
+
+  /// Set only when [status] is [UpdateStatus.available].
+  final UpdateInfo? info;
+
+  const UpdateCheck(this.status, {this.info});
+}
+
 /// Self-update for the Windows desktop build.
 ///
 /// The Windows app has no Firebase SDK (see main._initFirebase), so it reads the
@@ -43,16 +72,18 @@ class UpdateService {
   /// Self-update only makes sense for the packaged Windows installer build.
   bool get supported => Platform.isWindows;
 
-  /// Reads the manifest and returns it only when it describes a version newer
-  /// than the running app. Returns null when up to date, unsupported, or the
-  /// manifest is missing. Throws on network/parse errors so a *manual* check can
-  /// report the failure; the automatic check swallows those.
-  Future<UpdateInfo?> checkForUpdate() async {
-    if (!supported) return null;
+  /// Reads the manifest and reports whether it describes a version newer than
+  /// the running app. Distinguishes "no manifest published" from "up to date"
+  /// so the UI can tell the user which it is. Throws on network/parse errors so
+  /// a *manual* check can report the failure; the automatic check swallows those.
+  Future<UpdateCheck> checkForUpdate() async {
+    if (!supported) return const UpdateCheck(UpdateStatus.unsupported);
     final latest = await fetchManifest();
-    if (latest == null) return null;
+    if (latest == null) return const UpdateCheck(UpdateStatus.noManifest);
     final current = (await PackageInfo.fromPlatform()).version;
-    return isNewer(latest.version, current) ? latest : null;
+    return isNewer(latest.version, current)
+        ? UpdateCheck(UpdateStatus.available, info: latest)
+        : const UpdateCheck(UpdateStatus.upToDate);
   }
 
   /// Fetches and parses the Firestore REST manifest, or null if the document

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../services/auth_service.dart';
 import '../../services/export_service.dart';
+import '../../services/update_service.dart';
 import '../../state/app_state.dart';
 import '../updates/update_dialog.dart';
 import '../widgets/app_bar_bits.dart';
@@ -209,13 +210,23 @@ class _CheckForUpdatesTileState extends State<_CheckForUpdatesTile> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _checking = true);
     try {
-      final info = await state.checkForUpdateNow();
+      final result = await state.checkForUpdateNow();
       if (!mounted) return;
-      if (info == null) {
-        messenger.showSnackBar(
-            const SnackBar(content: Text("You're on the latest version.")));
-      } else {
-        await showUpdateDialog(context, info);
+      switch (result.status) {
+        case UpdateStatus.available:
+          await showUpdateDialog(context, result.info!);
+        case UpdateStatus.upToDate:
+          messenger.showSnackBar(
+              const SnackBar(content: Text("You're on the latest version.")));
+        case UpdateStatus.noManifest:
+          // No manifest published yet — a setup problem, not "you're current".
+          // Saying so keeps an unconfigured release channel from looking like a
+          // working check that found nothing.
+          messenger.showSnackBar(const SnackBar(
+              content: Text('No update information is published yet. '
+                  'Contact an admin.')));
+        case UpdateStatus.unsupported:
+          break; // The tile is hidden on platforms without self-update.
       }
     } catch (e) {
       messenger.showSnackBar(

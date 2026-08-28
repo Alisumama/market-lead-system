@@ -107,9 +107,9 @@ class AppState extends ChangeNotifier {
   Future<void> _checkForUpdateSilently() async {
     if (!updater.supported) return;
     try {
-      final info = await updater.checkForUpdate();
-      if (info != null) {
-        availableUpdate = info;
+      final result = await updater.checkForUpdate();
+      if (result.info != null) {
+        availableUpdate = result.info;
         notifyListeners();
       }
     } catch (_) {
@@ -117,14 +117,15 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// Manual "Check for updates" from Settings. Returns the newer release (also
-  /// stored in [availableUpdate]) or null when already up to date. Rethrows so
-  /// the UI can show a failure.
-  Future<UpdateInfo?> checkForUpdateNow() async {
-    final info = await updater.checkForUpdate();
-    availableUpdate = info;
-    if (info != null) notifyListeners();
-    return info;
+  /// Manual "Check for updates" from Settings. Returns the full outcome so the
+  /// UI can tell a missing manifest apart from being up to date; any newer
+  /// release is also stored in [availableUpdate]. Rethrows so the UI can show a
+  /// failure.
+  Future<UpdateCheck> checkForUpdateNow() async {
+    final result = await updater.checkForUpdate();
+    availableUpdate = result.info;
+    if (result.info != null) notifyListeners();
+    return result;
   }
 
   Timer? _timer;
