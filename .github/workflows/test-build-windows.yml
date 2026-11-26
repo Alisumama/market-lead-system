@@ -1,0 +1,45 @@
+name: Test build Windows
+
+# Test-only build. Makes the Windows app and uploads it as a downloadable zip
+# (Actions tab > this run > Artifacts). It does NOT create a release, a tag,
+# or touch the Firestore update manifest, so installed apps are not affected.
+
+on:
+  push:
+    branches: ['fix/**', 'test/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.4
+          channel: stable
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze (report only)
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build Windows app
+        run: flutter build windows --release
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: bastak_leads_test
+          path: build/windows/x64/runner/Release
+          retention-days: 7

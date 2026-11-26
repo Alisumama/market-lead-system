@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
@@ -16,25 +17,77 @@ class RssCollector implements Collector {
   final http.Client _client;
   RssCollector([http.Client? client]) : _client = client ?? http.Client();
 
-  static const _userAgent =
-      'BastakLeads/1.0 (+contact: bastakinstruments@gmail.com)';
+  // A normal browser User-Agent. Google News and several trade sites answer a
+  // bot-looking agent with HTTP 429 / 401 / 403.
+  static const _headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml, application/atom+xml, application/xml, '
+        'text/xml;q=0.9, */*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+
+  /// Total tries per source when the server says "slow down" or is briefly
+  /// unavailable (HTTP 429 / 502 / 503 / 504).
+  static const _maxAttempts = 3;
+  static final _random = Random();
 
   @override
   bool handles(FeedSource source) =>
       source.kind == SourceKind.rss || source.kind == SourceKind.googleAlert;
 
+  /// GET with a polite retry: waits (honouring `Retry-After` when sent) and
+  /// tries again on rate-limit / temporary-outage responses.
+  Future<http.Response> _get(Uri uri) async {
+    late http.Response resp;
+    for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
+      resp = await _client
+          .get(uri, headers: _headers)
+          .timeout(const Duration(seconds: 25));
+      final retryable = resp.statusCode == 429 ||
+          resp.statusCode == 502 ||
+          resp.statusCode == 503 ||
+          resp.statusCode == 504;
+      if (!retryable || attempt == _maxAttempts) break;
+      await Future<void>.delayed(_retryDelay(resp, attempt));
+    }
+    return resp;
+  }
+
+  static Duration _retryDelay(http.Response resp, int attempt) {
+    final retryAfter = int.tryParse(resp.headers['retry-after'] ?? '');
+    if (retryAfter != null && retryAfter > 0) {
+      return Duration(seconds: min(retryAfter, 60));
+    }
+    // 8s, then 24s, plus up to 3s of jitter.
+    final baseMs = attempt == 1 ? 8000 : 24000;
+    return Duration(milliseconds: baseMs + _random.nextInt(3000));
+  }
+
+  static String _httpError(int code) => switch (code) {
+        429 => 'HTTP 429 (rate limited, will retry next refresh)',
+        401 || 403 => 'HTTP $code (site refused the request)',
+        404 => 'HTTP 404 (feed address not found)',
+        _ => 'HTTP $code',
+      };
+
   @override
   Future<CollectResult> fetch(FeedSource source) async {
     try {
-      final resp = await _client.get(
-        Uri.parse(source.url),
-        headers: {'User-Agent': _userAgent, 'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml'},
-      ).timeout(const Duration(seconds: 25));
+      final resp = await _get(Uri.parse(source.url));
 
       if (resp.statusCode != 200) {
-        return CollectResult.failure('HTTP ${resp.statusCode}');
+        return CollectResult.failure(_httpError(resp.statusCode));
       }
       final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      final head = body.trimLeft();
+      final probe =
+          head.substring(0, min(200, head.length)).toLowerCase();
+      if (probe.startsWith('<!doctype html') || probe.startsWith('<html')) {
+        return CollectResult.failure(
+            'This address is a web page, not an RSS/Atom feed');
+      }
       final doc = XmlDocument.parse(body);
       final now = DateTime.now().toUtc().toIso8601String();
 
@@ -52,7 +105,7 @@ class RssCollector implements Collector {
         }
       }
       return CollectResult(items);
-    } on XmlParserException {
+    } on XmlException {
       return CollectResult.failure('feed is not valid XML');
     } catch (e) {
       return CollectResult.failure(e.toString());
