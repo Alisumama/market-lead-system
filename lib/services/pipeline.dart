@@ -67,13 +67,23 @@ class Pipeline {
     required this.repo,
     KeywordScorer? scorer,
     List<Collector>? collectors,
+    this.googleGap = const Duration(seconds: 4),
   })  : scorer = scorer ?? const KeywordScorer(),
         _collectors = collectors ??
             [RssCollector(), WorldBankCollector()];
 
-  /// How many sources to fetch at once. Bounded so we're fast without
-  /// hammering (and risking rate-limits from) Google News / World Bank.
+  /// How many non-Google sources to fetch at once.
   static const _fetchConcurrency = 6;
+
+  /// Pause between two requests to the same Google host. Google News answers
+  /// bursts of feed requests with HTTP 429, so those go out one at a time.
+  final Duration googleGap;
+  static final _random = Random();
+
+  static bool _isGoogle(FeedSource s) {
+    final host = Uri.tryParse(s.url)?.host.toLowerCase() ?? '';
+    return host == 'google.com' || host.endsWith('.google.com');
+  }
 
   Future<PipelineOutcome> run({
     void Function(PipelineProgress)? onProgress,
@@ -81,24 +91,44 @@ class Pipeline {
     final sources = await repo.enabledSources();
     var completed = 0;
 
-    // Phase 1 — fetch every source's network data concurrently (the slow part),
-    // capped at [_fetchConcurrency] in flight at a time.
-    final fetched = await _pool<FeedSource,
-        ({FeedSource source, CollectResult result})>(
-      sources,
-      _fetchConcurrency,
-      (source) async {
-        final collector = _collectors.firstWhere(
-          (c) => c.handles(source),
-          orElse: () => _NoopCollector(),
-        );
-        final result = await collector.fetch(source);
-        completed++;
-        onProgress?.call(PipelineProgress(
-            source.name, completed, sources.length, result.items.length));
-        return (source: source, result: result);
-      },
-    );
+    Future<({FeedSource source, CollectResult result})> fetchOne(
+        FeedSource source) async {
+      final collector = _collectors.firstWhere(
+        (c) => c.handles(source),
+        orElse: () => _NoopCollector(),
+      );
+      final result = await collector.fetch(source);
+      completed++;
+      onProgress?.call(PipelineProgress(
+          source.name, completed, sources.length, result.items.length));
+      return (source: source, result: result);
+    }
+
+    // Phase 1 — fetch every source's network data (the slow part). Google
+    // sources run one by one with a pause between them; everything else runs
+    // concurrently, capped at [_fetchConcurrency] in flight at a time.
+    final googleSources = sources.where(_isGoogle).toList();
+    final otherSources = sources.where((s) => !_isGoogle(s)).toList();
+
+    Future<List<({FeedSource source, CollectResult result})>>
+        fetchGoogle() async {
+      final out = <({FeedSource source, CollectResult result})>[];
+      for (var i = 0; i < googleSources.length; i++) {
+        if (i > 0 && googleGap > Duration.zero) {
+          await Future<void>.delayed(
+              googleGap + Duration(milliseconds: _random.nextInt(1500)));
+        }
+        out.add(await fetchOne(googleSources[i]));
+      }
+      return out;
+    }
+
+    final parts = await Future.wait([
+      _pool<FeedSource, ({FeedSource source, CollectResult result})>(
+          otherSources, _fetchConcurrency, fetchOne),
+      fetchGoogle(),
+    ]);
+    final fetched = [...parts[0], ...parts[1]];
 
     // Phase 2 — score + store sequentially so dedup stays race-free (SQLite
     // writes are serial anyway; this is fast, local work).

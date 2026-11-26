@@ -236,7 +236,7 @@ class _RefreshCard extends StatelessWidget {
               state.autoRefreshHourly
                   ? (state.nextRefreshAt != null
                       ? 'Next at ${state.nextRefreshAt!.hour.toString().padLeft(2, '0')}:00'
-                      : 'Hourly at :00')
+                      : 'Every 3 hours')
                   : 'Manual only',
               style: const TextStyle(fontSize: 12),
             ),

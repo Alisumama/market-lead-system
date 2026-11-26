@@ -4,11 +4,16 @@ import 'notification_service.dart';
 import 'pipeline.dart';
 import 'settings_service.dart';
 
+/// The OS schedule ticks every hour; the headless pass only does work on hours
+/// that are a multiple of this, so Google News is not asked too often.
+const headlessEveryHours = 3;
+
 /// Runs one collection pass with no UI — used by the OS scheduler (launchd /
 /// Task Scheduler) on desktop and by the WorkManager isolate on Android, so the
 /// radar keeps collecting while the app is closed. Reuses the same DB, scoring
 /// config and notification prefs as the interactive app.
 Future<void> runHeadlessRefresh() async {
+  if (DateTime.now().hour % headlessEveryHours != 0) return;
   final settings = SettingsService();
   final repo = LeadRepository();
   final notifications = NotificationService();

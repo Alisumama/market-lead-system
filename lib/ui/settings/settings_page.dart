@@ -67,9 +67,9 @@ class SettingsPage extends StatelessWidget {
               _card(context, [
                 SwitchListTile(
                   secondary: const Icon(Icons.autorenew),
-                  title: const Text('Auto-refresh hourly'),
+                  title: const Text('Auto-refresh every 3 hours'),
                   subtitle: Text(state.autoRefreshHourly
-                      ? 'Scans sources at the top of every hour (:00) while the '
+                      ? 'Scans sources every 3 hours (00:00, 03:00, 06:00 ...) while the '
                           'app is open${_nextRefreshSuffix(state)}'
                       : 'Off — reload manually with Refresh now'),
                   value: state.autoRefreshHourly,
@@ -81,7 +81,7 @@ class SettingsPage extends StatelessWidget {
                     secondary: const Icon(Icons.cloud_sync_outlined),
                     title: const Text('Background refresh'),
                     subtitle: const Text(
-                        'Keep collecting hourly even when the app is closed'),
+                        'Keep collecting every 3 hours even when the app is closed'),
                     value: state.backgroundEnabled,
                     onChanged: (v) async {
                       final ok = await state.setBackgroundEnabled(v);
@@ -401,7 +401,7 @@ class _NotificationSettings extends StatelessWidget {
           secondary: const Icon(Icons.sync),
           title: const Text('Notify after auto-refresh'),
           subtitle: const Text(
-              'Get a summary each time the hourly refresh finishes'),
+              'Get a summary each time the automatic refresh finishes'),
           value: state.notifAfterRefresh,
           onChanged: on ? state.setNotifAfterRefresh : null,
         ),

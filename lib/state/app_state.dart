@@ -68,7 +68,8 @@ class AppState extends ChangeNotifier {
   List<String> countries = [];
   List<String> sourceNames = [];
   List<FeedSource> sources = [];
-  LeadQuery query = const LeadQuery();
+  // Open on the newest leads so a fresh refresh is visible straight away.
+  LeadQuery query = const LeadQuery(sort: LeadSort.dateDesc);
 
   bool loading = true;
   bool refreshing = false;
@@ -176,8 +177,13 @@ class AppState extends ChangeNotifier {
     _scheduleHourly();
   }
 
-  /// Fires the pipeline at the top of the next hour (:00), then reschedules for
-  /// the following hour. Aligned to the wall clock, not to launch time. Only
+  /// Hours between automatic refreshes. Slots fall on wall-clock hours that are
+  /// a multiple of this (00:00, 03:00, 06:00 ...). Kept low-frequency so Google
+  /// News does not rate-limit the feeds (HTTP 429).
+  static const refreshEveryHours = 3;
+
+  /// Fires the pipeline at the next refresh slot (:00), then reschedules for
+  /// the following one. Aligned to the wall clock, not to launch time. Only
   /// runs while the app is open.
   void _scheduleHourly() {
     _timer?.cancel();
@@ -186,8 +192,11 @@ class AppState extends ChangeNotifier {
       return;
     }
     final now = DateTime.now();
-    final next = DateTime(now.year, now.month, now.day, now.hour)
+    var next = DateTime(now.year, now.month, now.day, now.hour)
         .add(const Duration(hours: 1));
+    while (next.hour % refreshEveryHours != 0) {
+      next = next.add(const Duration(hours: 1));
+    }
     nextRefreshAt = next;
     _timer = Timer(next.difference(now), () async {
       if (!refreshing) await refresh(isAuto: true);
